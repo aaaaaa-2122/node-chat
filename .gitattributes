@@ -1,0 +1,12 @@
+# 统一换行：脚本在 Linux 上要能直接跑
+* text=auto eol=lf
+*.sh text eol=lf
+*.bat text eol=crlf
+*.csproj text eol=lf
+
+# 二进制
+*.png binary
+*.ico binary
+*.apk binary
+*.keystore binary
+*.jar binary

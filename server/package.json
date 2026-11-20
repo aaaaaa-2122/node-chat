@@ -1,0 +1,21 @@
+{
+  "name": "node-chat",
+  "version": "1.0.0",
+  "description": "零依赖的 Node.js 即时消息系统：服务端 + 客户端 + 可脚本化的命令行接口（私聊 / 群聊 / 离线消息 / 历史记录）",
+  "main": "src/client-lib.js",
+  "bin": {
+    "chat-server": "src/server.js",
+    "chat": "src/repl.js",
+    "chat-cli": "src/cli.js"
+  },
+  "scripts": {
+    "start": "node src/server.js --demo",
+    "server": "node src/server.js --demo",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "keywords": ["chat", "websocket", "tcp", "cli", "instant-messaging", "group-chat"],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  }
+}
