@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#f1f3f8">
+<title>Node Chat</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ============================== 登录 ============================== -->
+<div id="login" class="screen login">
+  <div class="login-wrap">
+    <div class="hero">
+      <div class="logo">N</div>
+      <div class="hero-text">
+        <h1>Node Chat</h1>
+        <p>轻量即时消息 · 与桌面端互通</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="section-title">
+        <span>最近的服务器</span>
+        <em>点一下回填</em>
+      </div>
+      <div id="serverChips" class="chips"></div>
+
+      <div class="row">
+        <label class="field grow">
+          <span>服务器地址</span>
+          <input id="host" placeholder="192.168.1.8" autocapitalize="off" autocomplete="off" spellcheck="false">
+        </label>
+        <label class="field port">
+          <span>端口</span>
+          <input id="port" placeholder="9099" inputmode="numeric" autocomplete="off">
+        </label>
+      </div>
+
+      <label class="field">
+        <span>用户名</span>
+        <input id="username" placeholder="首次登录自动注册" maxlength="24" autocapitalize="off" autocomplete="off" spellcheck="false">
+      </label>
+
+      <label class="field">
+        <span>密码</span>
+        <!-- 用 -webkit-text-security 遮蔽，而不是 type=password：
+             后者在部分 ROM（如 ColorOS）会拉起系统安全键盘，其窗口禁止截屏 -->
+        <input id="password" type="text" class="masked" placeholder="密码" maxlength="32"
+               autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false">
+      </label>
+
+      <label class="remember">
+        <input type="checkbox" id="remember" checked>
+        <i></i>
+        <span>记住这台服务器（只存地址和用户名）</span>
+      </label>
+
+      <button id="btnConnect" class="primary big">连　接</button>
+      <div id="loginMsg" class="login-msg"></div>
+    </div>
+
+    <div class="tip" id="tip">内置服务端 127.0.0.1:9099 · 首次登录自动注册</div>
+  </div>
+</div>
+
+<!-- ============================== 会话列表 ============================== -->
+<div id="app" class="screen app hidden">
+  <header class="topbar">
+    <button id="meAvatar" class="avatar big" title="我的资料"></button>
+    <div class="me">
+      <div class="me-name"><span id="meName">-</span><i id="dot" class="dot"></i></div>
+      <div class="me-sub" id="meSub">在线 0 人</div>
+    </div>
+    <button id="btnMenu" class="icon menu">⋯</button>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="group">群聊</button>
+    <button class="tab" data-tab="dm">私聊</button>
+    <button class="tab" data-tab="online">在线</button>
+  </nav>
+
+  <main class="lists">
+    <section id="paneGroup" class="pane"><div id="roomList" class="list"></div></section>
+    <section id="paneDm" class="pane hidden"><div id="dmList" class="list"></div></section>
+    <section id="paneOnline" class="pane hidden"><div id="onlineList" class="list"></div></section>
+  </main>
+
+  <button id="btnNewRoom" class="fab" title="新建群聊">＋</button>
+</div>
+
+<!-- ============================== 聊天 ============================== -->
+<div id="chat" class="chat">
+  <header class="chatbar">
+    <button id="btnBack" class="icon back">‹</button>
+    <div class="chat-title">
+      <div id="chatName">-</div>
+      <div id="chatSub"></div>
+    </div>
+    <button id="btnChatMenu" class="icon menu">⋯</button>
+  </header>
+
+  <div id="messages" class="messages"></div>
+
+  <div id="attachBar" class="attach hidden">
+    <img id="attachThumb" alt="">
+    <div class="attach-meta">
+      <b id="attachName">图片</b>
+      <span>点发送随消息一起发出</span>
+    </div>
+    <button id="attachRemove">移除</button>
+  </div>
+
+  <footer class="composer">
+    <button id="btnPickImage" class="icon pic">图片</button>
+    <textarea id="inputText" rows="1" placeholder="输入消息…" maxlength="4000"></textarea>
+    <button id="btnSend" class="primary send">发送</button>
+  </footer>
+</div>
+
+<!-- ============================== 弹出面板 ============================== -->
+<div id="sheet" class="sheet hidden">
+  <div class="sheet-mask" data-close="1"></div>
+  <div class="sheet-body">
+    <div class="sheet-grip"></div>
+    <div id="sheetTitle" class="sheet-title">我的资料</div>
+    <div id="sheetContent" class="sheet-content"></div>
+    <button class="sheet-close" data-close="1">关闭</button>
+  </div>
+</div>
+
+<div id="viewer" class="viewer hidden">
+  <img id="viewerImg" alt="查看大图">
+  <div class="viewer-hint">点击任意处关闭</div>
+</div>
+
+<div id="toast"></div>
+
+<input type="file" id="avatarFile" accept="image/*" class="hidden-file">
+<input type="file" id="imageFile" accept="image/*" class="hidden-file">
+
+<script src="app.js"></script>
+</body>
+</html>

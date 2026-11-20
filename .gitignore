@@ -1,0 +1,21 @@
+# 构建产物
+bin/
+obj/
+build/
+dist/
+*.tgz
+*.user
+.pack/
+_stage/
+
+# 数据与本地配置
+data/
+node_modules/
+.deploy_key*
+clean_*.json
+
+# 编辑器 / 系统
+.vs/
+.idea/
+.DS_Store
+Thumbs.db
