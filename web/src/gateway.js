@@ -38,9 +38,13 @@ function parseArgs(argv) {
     maxFrame: 2 * 1024 * 1024,
     tlsCert: '',
     tlsKey: '',
-    // 有证书时再开一个明文端口：只做 ACME 验证和 301 跳转，不提供页面
+    // 有证书时再开一个明文端口：ACME 验证 + 域名请求 301 到 https
     redirectPort: 0,
     acmeRoot: '/var/www/acme',
+    // 只对这个 Host 做跳转；留空表示所有 Host 都跳。
+    // 设成域名后，直接打 IP 的访问仍走明文——证书里没有 IP，
+    // 无条件跳转会让 http://IP 变成「证书不匹配」的白屏告警页。
+    tlsHost: '',
   };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
@@ -57,11 +61,13 @@ function parseArgs(argv) {
     else if (a === '--tls-key') out.tlsKey = path.resolve(next());
     else if (a === '--redirect-port') out.redirectPort = Number(next());
     else if (a === '--acme-root') out.acmeRoot = path.resolve(next());
+    else if (a === '--tls-host') out.tlsHost = String(next() || '').toLowerCase();
     else if (a === '--help' || a === '-h') {
       process.stdout.write(
         '用法: node src/gateway.js [--port 8080] [--upstream 127.0.0.1:9099] [--root ./public]\n' +
           '                             [--tls-cert cert.pem --tls-key key.pem]\n' +
-          '                             [--redirect-port 80] [--acme-root /var/www/acme]\n'
+          '                             [--redirect-port 80] [--acme-root /var/www/acme]\n' +
+          '                             [--tls-host 只对这个域名跳转 https]\n'
       );
       process.exit(0);
     }
@@ -434,6 +440,9 @@ function main() {
     const url = req.url.split('?')[0];
     const key = req.headers['sec-websocket-key'];
     if (url !== '/ws' || !key || req.headers.upgrade?.toLowerCase() !== 'websocket') {
+      // 拒绝路径也必须挂 error：对端先 RST 的话，光写不读会抛未捕获的 ECONNRESET，
+      // 一个扫描器就能把整个网关带走
+      socket.on('error', () => {});
       socket.write('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
       socket.destroy();
       return;
@@ -454,7 +463,8 @@ function main() {
     );
   });
 
-  // 明文端口：ACME 验证 + 其余一律 301 到 https
+  // 明文端口：ACME 验证 + 域名请求 301 到 https；其他 Host（例如直接打 IP）
+  // 继续走明文，否则证书里没有 IP，浏览器会撞上白屏告警页
   let redirector = null;
   if (useTls && cfg.redirectPort) {
     const toHttps = (req) => {
@@ -462,21 +472,44 @@ function main() {
       const portPart = cfg.port === 443 ? '' : `:${cfg.port}`;
       return `https://${host}${portPart}${req.url}`;
     };
+    const wantRedirect = (req) => {
+      if (!cfg.tlsHost) return true;
+      const host = String(req.headers.host || '').split(':')[0].toLowerCase();
+      return host === cfg.tlsHost;
+    };
     redirector = http.createServer((req, res) => {
       if (req.url.startsWith('/.well-known/acme-challenge/')) {
         serveAcme(req, res, cfg.acmeRoot);
         return;
       }
-      res.writeHead(301, { Location: toHttps(req), 'Content-Length': 0 }).end();
+      if (wantRedirect(req)) {
+        res.writeHead(301, { Location: toHttps(req), 'Content-Length': 0 }).end();
+        return;
+      }
+      handler(req, res);
     });
-    redirector.on('upgrade', (req, socket) => {
-      socket.end(
-        'HTTP/1.1 301 Moved Permanently\r\n' +
-          `Location: ${toHttps(req)}\r\nConnection: close\r\n\r\n`
-      );
+    redirector.on('upgrade', (req, socket, head) => {
+      // 同上：任何只写不读的 socket 都要挂 error，否则对端 RST 会打穿进程
+      socket.on('error', () => {});
+      if (wantRedirect(req)) {
+        socket.end(
+          'HTTP/1.1 301 Moved Permanently\r\n' +
+            `Location: ${toHttps(req)}\r\nConnection: close\r\n\r\n`
+        );
+        return;
+      }
+      clients.open += 1;
+      socket.once('close', () => {
+        clients.open -= 1;
+      });
+      bridge(socket, head, cfg, req);
     });
     redirector.listen(cfg.redirectPort, cfg.host, () => {
-      process.stdout.write(`   跳转:   http://${cfg.host}:${cfg.redirectPort} -> https\n`);
+      process.stdout.write(
+        `   跳转:   http://${cfg.host}:${cfg.redirectPort} -> https` +
+          (cfg.tlsHost ? `（仅 ${cfg.tlsHost}，其他 Host 走明文）` : '') +
+          '\n'
+      );
     });
   }
 
