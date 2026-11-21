@@ -1,0 +1,3 @@
+- insert:
+    - id: agentbus
+      name: "@local/dsh-agentbus"

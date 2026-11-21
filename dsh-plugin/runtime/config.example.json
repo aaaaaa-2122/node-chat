@@ -1,0 +1,21 @@
+{
+  "host": "127.0.0.1",
+  "port": 9099,
+  "user": "你的账号",
+  "pass": "你的密码",
+  "rooms": [
+    "大厅",
+    "agents"
+  ],
+  "dataDir": "./data",
+  "wake": {
+    "dm": true,
+    "mention": true
+  },
+  "http": {
+    "host": "127.0.0.1",
+    "port": 9101
+  },
+  "redeliverMs": 300000,
+  "keepAliveMs": 120000
+}

@@ -114,6 +114,20 @@ Release 里提供开箱即用的包：
 - 安卓内置服务端为演示实现：密码明文存 App 私有目录、只监听 `127.0.0.1`。
 - 没有好友关系、消息撤回、已读回执；图片以 data URL 内联，不适合大量图片场景。
 
+## 分支：dsh-plugin
+
+本仓库另有一条 `dsh-plugin` 分支，把聊天协议用在**多 agent 协同**上：把服务端当信箱，
+守护进程独占连接、watchdog 长轮询负责唤醒，agent 用 `status / pending / ack / reply / send`
+五个工具收发。唤醒不抢占式打断，而是宿主「后台任务结束」这一事件。
+
+```
+agent 宿主 ── spawn ──> daemon.js（独占 TCP）──127.0.0.1:9101──┬── watchdog.js（退出即唤醒）
+                                                              └── agentbus.js（回信）
+```
+
+适配到别的宿主只需三件事：加载时起 daemon、把 watchdog 挂成后台任务、把五个子命令包成工具。
+细节见该分支的 `dsh-plugin/README.md`。
+
 ## License
 
 MIT

@@ -19,3 +19,7 @@ clean_*.json
 .idea/
 .DS_Store
 Thumbs.db
+
+# dsh 插件：本地配置与运行时状态（含账号密码、token、消息台账）
+dsh-plugin/runtime/config.json
+dsh-plugin/runtime/data/
