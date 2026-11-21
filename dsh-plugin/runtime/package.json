@@ -6,7 +6,8 @@
   "main": "src/daemon.js",
   "scripts": {
     "start": "node src/daemon.js",
-    "watchdog": "node src/watchdog.js"
+    "watchdog": "node src/watchdog.js",
+    "test": "node --test test/"
   },
   "engines": {
     "node": ">=18"

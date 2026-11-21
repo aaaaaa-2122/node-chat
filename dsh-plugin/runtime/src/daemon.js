@@ -19,6 +19,10 @@ const ChatConn = require('./conn');
 const Store = require('./store');
 
 const DEFAULT_REDELIVER_MS = 5 * 60 * 1000;
+/** 重连退避上限；同时也是「不许产生第二个重连循环」这条约束的配套 */
+const MAX_BACKOFF_MS = 30000;
+/** 日志超过这个大小就在下次启动时轮转，避免无声长到几百 MB */
+const LOG_ROTATE_BYTES = 20 * 1024 * 1024;
 
 // ------------------------------------------------------------------ 配置
 
@@ -79,6 +83,8 @@ class Daemon {
     this.startedAt = Date.now();
     this.connected = false;
     this._backoff = 1000;
+    this._reconnectTimer = null;
+    this._stopped = false;
     this._token = '';
     this._http = null;
     this.logPath = path.join(cfg.dataDir, 'daemon.log');
@@ -98,6 +104,15 @@ class Daemon {
 
   start() {
     fs.mkdirSync(this.cfg.dataDir, { recursive: true });
+
+    // 日志轮转：上一次可能是几千行/秒在刷，先截住再启动
+    try {
+      if (fs.statSync(this.logPath).size > LOG_ROTATE_BYTES) {
+        fs.renameSync(this.logPath, this.logPath + '.1');
+      }
+    } catch (e) {
+      /* 没有旧日志就不用轮转 */
+    }
 
     // 单例：pid 还活着就不许第二个起来
     const pidFile = path.join(this.cfg.dataDir, 'daemon.pid');
@@ -151,6 +166,18 @@ class Daemon {
   // ---------------------------------------------------------------- 连接
 
   _connect() {
+    if (this._stopped) return;
+
+    // 先摘掉旧连接：不留监听器，免得它的 close 事件再排一次重连
+    if (this.conn) {
+      try {
+        this.conn.removeAllListeners();
+        this.conn.close();
+      } catch (e) {
+        /* 已经断了 */
+      }
+    }
+
     this.conn = new ChatConn({
       host: this.cfg.host,
       port: this.cfg.port,
@@ -162,6 +189,23 @@ class Daemon {
       pinFile: path.join(this.cfg.dataDir, 'known-servers.json'),
     });
 
+    // 单一重连排期。
+    // 务必只有这一个入口：connect 失败会同时触发 close 回调和 Promise 的 catch，
+    // 原先两处各自 setTimeout，导致每一轮失败都分裂成两个重连循环，次数按 2^n 爆炸。
+    // 2026-11-21 那次整机端口耗尽就是它：40 分钟堆出 16000 多个 socket，
+    // 占满 Windows 的 16384 个临时端口，全机新建连接 ENOBUFS。
+    const scheduleReconnect = (reason) => {
+      if (this._stopped) return;
+      if (this._reconnectTimer) return; // 已有排期，重复触发一律忽略
+      const delay = this._backoff;
+      this._backoff = Math.min(this._backoff * 2, MAX_BACKOFF_MS);
+      this._reconnectTimer = setTimeout(() => {
+        this._reconnectTimer = null;
+        this._connect();
+      }, delay);
+      this.log(reason + '，' + Math.round(delay / 1000) + ' 秒后重连');
+    };
+
     this.conn.on('message', (msg, type) => this._ingest(msg, type));
     this.conn.on('secure', (info) => {
       this.log('加密已启用 · 服务端指纹 ' + info.fp + (info.pinned ? '（与记录一致）' : '（首次信任，已记住）'));
@@ -172,10 +216,7 @@ class Daemon {
     });
     this.conn.on('close', () => {
       this.connected = false;
-      this.log('连接断开，' + Math.round(this._backoff / 1000) + ' 秒后重连');
-      setTimeout(() => this._connect(), this._backoff);
-      this._backoff = Math.min(this._backoff * 2, 30000);
-      if (this._backoff > 30000) this._backoff = 30000;
+      scheduleReconnect('连接断开');
     });
 
     this.conn
@@ -183,9 +224,7 @@ class Daemon {
       .then(() => this.connected = true)
       .then(() => this._afterReady())
       .catch((err) => {
-        this.log('连不上：' + err.message + '，' + Math.round(this._backoff / 1000) + ' 秒后重试');
-        setTimeout(() => this._connect(), this._backoff);
-        this._backoff = Math.min(this._backoff * 2, 30000);
+        scheduleReconnect('连不上：' + err.message);
       });
   }
 
@@ -440,6 +479,11 @@ class Daemon {
 
   stop() {
     this.log('收到退出信号，保存状态');
+    this._stopped = true;
+    if (this._reconnectTimer) {
+      clearTimeout(this._reconnectTimer);
+      this._reconnectTimer = null;
+    }
     this.store.saveState();
     if (this.conn) this.conn.close();
     if (this._http) this._http.close();

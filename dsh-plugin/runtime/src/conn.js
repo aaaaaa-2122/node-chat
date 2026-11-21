@@ -62,6 +62,12 @@ class ChatConn extends EventEmitter {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        // 失败也要显式销毁：socket 挂在 BOUND 状态同样占着临时端口
+        try {
+          socket.destroy();
+        } catch (e) {
+          /* 已经关了 */
+        }
         reject(err);
       };
 
