@@ -159,7 +159,22 @@ node test/gateway.e2e.mjs
 
 # 界面级：无头 Edge 截图，需要本地已起网关（默认 http://127.0.0.1:8090）
 node test/ui-shot.mjs
+
+# 延迟：两条连接互发私信，量端到端投递耗时（不写任何真实房间）
+node test/cf-latency.mjs [host] [ws-url]
 ```
 
 `e2e` 会开两个 WebSocket：A 认证、发群消息和私聊，B 验证收到；另外测 90 KB 大帧、
 分片重组（逐字节投喂）、ping/pong、未认证拦截。
+
+`cf-latency` 会留下 `probe` 开头的测试账号和它们之间的私信，清理：
+
+```bash
+sudo systemctl stop node-chat
+sudo python3 test/clean-probe.py     # 删 probe 账号、其消息与私信，先自动备份
+sudo chown nodechat:nodechat /var/lib/node-chat/*.json
+sudo systemctl start node-chat
+```
+
+**别让测试脚本往真实房间发消息。** 早期版本就是这样把 `probe-<时间戳>` 灌进了线上
+`#general`，只能停服改 `rooms.json` 才清干净。
