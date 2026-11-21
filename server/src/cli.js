@@ -14,12 +14,13 @@
  */
 
 const { connect, fileToDataUrl } = require('./client-lib');
+const { PinStore } = require('./secure');
 const { createParser } = require('./options');
 
 const parse = createParser([
   'host', 'port', 'p', 'user', 'u', 'password', 'k',
   'text', 'to', 'room', 'with', 'limit', 'timeout', 'duration', 'group',
-  'image', 'set-avatar',
+  'image', 'set-avatar', 'pin-file',
 ]);
 
 const HELP = `用法: node src/cli.js <命令> [参数] [选项]
@@ -43,6 +44,9 @@ const HELP = `用法: node src/cli.js <命令> [参数] [选项]
   -k, --password <密码>    密码（默认 123456）
       --image <文件>        随消息附带一张图片（会自动转成 data URL）
       --set-avatar <文件>   登录后立即把该图片设为自己的头像
+      --secure             启用传输加密（服务端同时支持明文与加密）
+      --pin-file <文件>    服务端指纹记录文件（默认 ~/.nodechat/known-hosts.json）
+      --pin-reset          忘掉该服务端已记录的指纹（下次连接重新信任）
       --json               以 JSON Lines 输出（便于管道处理）
       --only-messages      JSON 模式下只输出 msg/group，忽略上下线等系统事件
       --timeout <毫秒>     单次请求超时（默认 10000）
@@ -100,7 +104,24 @@ async function main() {
   const command = positional[0];
   const args = positional.slice(1);
 
-  const client = await connect({ host, port, username, password, timeout });
+  if (opts['pin-reset']) {
+    new PinStore(opts['pin-file'] || undefined).remove(host, port);
+    process.stderr.write(`[加密] 已忘掉 ${host}:${port} 的服务端指纹，下次连接重新信任\n`);
+  }
+
+  const client = await connect({
+    host,
+    port,
+    username,
+    password,
+    timeout,
+    secure: !!opts.secure,
+    pinFile: opts['pin-file'],
+    onFingerprint: (fp, firstTime) => {
+      // 一律走 stderr，保证 --json 的 stdout 只有数据
+      process.stderr.write(`[加密] 服务端指纹 ${fp}${firstTime ? '（首次信任，已记住）' : ''}\n`);
+    },
+  });
   client.on('error', (err) => {
     if (!asJson) process.stderr.write(`[错误] ${err.message}\n`);
   });
