@@ -67,6 +67,7 @@ sudo bash install-web.sh 80 9099
 | `--tls-cert` / `--tls-key` | 无 | 给了证书就切 HTTPS，WebSocket 自动变 wss，前端不用改 |
 | `--redirect-port` | 不启用 | 有证书时再开一个明文端口，只做 301 跳转和 ACME 验证 |
 | `--acme-root` | `/var/www/acme` | ACME 验证文件目录，`/.well-known/acme-challenge/` 从这里读 |
+| `--tls-host` | 空（全部） | 只对这个 Host 做 301；设了之后直接打 IP 仍走明文 |
 
 `GET /healthz` 返回上游地址、当前连接数、是否 HTTPS 和运行时长，方便探活。
 
@@ -93,6 +94,28 @@ mtime，变了就 `setSecureContext()` 热更，正在连着的 WebSocket 不会
   说好加密却静默明文，比起不来更危险。
 - **`install-web.sh` 按证书文件判断模式。** 认证过的机器再跑一次普通部署，不会把单元
   改回明文；`PLAIN=1` 才强制明文。
+- **跳转只对证书里的域名生效（`--tls-host`）。** 证书里没有 IP，无条件 301 会把
+  `http://<IP>/` 也推到 https，浏览器直接撞白屏告警页。设了 `--tls-host` 之后，
+  非该域名的 Host 继续走明文，静态页和 WS 桥接都照常。
+
+### 如果签下来了但外网打不开
+
+先分清是「证书问题」还是「链路被拦」。同一台机器、同一端口，换一个 SNI 就能判断：
+
+```bash
+# 任意 SNI → 200，说明 TLS 与端口都正常
+curl -sk --resolve foo.example.test:443:<服务器IP> https://foo.example.test/healthz
+# 自己的域名 → RST，说明是域名被中间设备拦了
+curl -sk --resolve nodechat.example.com:443:<服务器IP> https://nodechat.example.com/healthz
+```
+
+国内云主机上很常见的是**未备案域名被机房拦**：HTTP 会 302 到
+`dnspod.qcloud.com/static/webblock.html`（或类似封禁页），HTTPS 直接在握手阶段被 RST。
+这和代码、证书都无关，只能备案或换境外节点。另外 `.gay` 这类顶级域不在工信部批复
+列表里，**根本没法备案**，所以域名方案在这种机器上走不通——直接打 IP 反而可用。
+
+> 结论：`--tls-host` 不设时，80 端口会把所有 Host 都跳到 https。国内未备案机器一旦
+> 开了 HTTPS，务必设上它，否则连 `http://<IP>/` 这种能用的入口也会被自己跳死。
 
 ## 安全说明
 
