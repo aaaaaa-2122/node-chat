@@ -15,12 +15,14 @@ OUT = os.path.join(OUT_DIR, f"agentbus-skill-{VERSION}.zip")
 
 INCLUDE = [
     ("SKILL.md", "SKILL.md"),
+    ("SKILL.generic.md", "SKILL.generic.md"),
     ("INSTALL.md", "INSTALL.md"),
     ("README.md", "runtime/README.md"),
     ("package.json", "runtime/package.json"),
     ("config.example.json", "runtime/config.example.json"),
 ]
 SRC_GLOB = "src"
+TEST_GLOB = "test"
 
 
 def main():
@@ -37,6 +39,12 @@ def main():
     for name in sorted(os.listdir(src_dir)):
         if name.endswith(".js"):
             files.append((os.path.join(src_dir, name), os.path.join("runtime", "src", name)))
+
+    test_dir = os.path.join(ROOT, TEST_GLOB)
+    if os.path.isdir(test_dir):
+        for name in sorted(os.listdir(test_dir)):
+            if name.endswith(".js"):
+                files.append((os.path.join(test_dir, name), os.path.join("runtime", "test", name)))
 
     with zipfile.ZipFile(OUT, "w", zipfile.ZIP_DEFLATED) as z:
         for p, rel in files:
