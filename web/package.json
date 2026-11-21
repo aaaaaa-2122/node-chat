@@ -1,0 +1,14 @@
+{
+  "name": "node-chat-web",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Node Chat 网页端：静态页 + WebSocket 网关（桥接 TCP/NDJSON 服务端），零第三方依赖",
+  "main": "src/gateway.js",
+  "scripts": {
+    "start": "node src/gateway.js --port 8080 --upstream 127.0.0.1:9099",
+    "test": "node test/gateway.e2e.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

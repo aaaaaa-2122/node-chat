@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#4f46e5" />
+<title>Node Chat</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%234f46e5'/%3E%3Cpath d='M18 24h28M18 32h20M18 40h24' stroke='white' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+<!-- 登录 -->
+<div id="login" class="login">
+  <div class="login-card">
+    <div class="login-brand">
+      <div class="logo" aria-hidden="true">
+        <svg viewBox="0 0 64 64"><rect width="64" height="64" rx="16" fill="currentColor"/><path d="M17 23h30M17 32h21M17 41h26" stroke="#fff" stroke-width="5" stroke-linecap="round"/></svg>
+      </div>
+      <h1>Node Chat</h1>
+      <p>TCP + NDJSON 四端互通 · 网页版</p>
+    </div>
+    <form id="loginForm" autocomplete="on">
+      <label>
+        <span>用户名</span>
+        <input id="inputUser" name="username" maxlength="24" required placeholder="首次登录自动注册" autocapitalize="off" autocorrect="off" spellcheck="false" />
+      </label>
+      <label>
+        <span>密码</span>
+        <input id="inputPass" name="password" type="password" required placeholder="自己设一个" />
+      </label>
+      <button id="btnLogin" type="submit">进入聊天室</button>
+      <p class="login-err" id="loginErr" role="alert"></p>
+      <p class="login-hint">用户名 1–24 位，中文 / 字母 / 数字 / <code>_</code> <code>.</code> <code>-</code></p>
+    </form>
+  </div>
+</div>
+
+<!-- 主界面 -->
+<div id="app" class="app" hidden>
+  <div id="scrim" class="scrim" hidden></div>
+
+  <aside id="sidebar" class="sidebar">
+    <header class="side-head">
+      <button id="meAvatar" class="avatar me-avatar" title="点击更换头像">?</button>
+      <div class="me-info">
+        <b id="meName">…</b>
+        <span id="connState" class="conn"><i></i>连接中</span>
+      </div>
+      <button id="btnLogout" class="icon-btn" title="退出">退出</button>
+    </header>
+
+    <div class="side-scroll">
+      <section class="side-sec">
+        <div class="sec-head">
+          <span>群聊</span>
+          <button id="btnNewRoom" class="mini-btn" title="新建或加入群">＋</button>
+        </div>
+        <ul id="roomList" class="conv-list"></ul>
+      </section>
+
+      <section class="side-sec">
+        <div class="sec-head">
+          <span>私聊</span>
+          <button id="btnRefreshWho" class="mini-btn" title="刷新在线用户">⟳</button>
+        </div>
+        <ul id="dmList" class="conv-list"></ul>
+      </section>
+    </div>
+
+    <footer class="side-foot">
+      <span id="serverName">Node Chat</span>
+    </footer>
+  </aside>
+
+  <main class="chat">
+    <header class="chat-head">
+      <button id="btnMenu" class="icon-btn only-mobile" title="会话列表">☰</button>
+      <div class="chat-title">
+        <h1 id="chatTitle">选择一个会话</h1>
+        <p id="chatSub">左边的群聊或私聊</p>
+      </div>
+      <button id="btnMembers" class="icon-btn only-wide" title="成员 / 在线">⋯</button>
+    </header>
+
+    <div id="messages" class="messages">
+      <div class="empty" id="emptyHint">
+        <div class="empty-art">💬</div>
+        <p>选一个群聊，或者点右边的人私聊</p>
+      </div>
+    </div>
+
+    <div class="composer" id="composer">
+      <div class="attach" id="attach" hidden>
+        <img id="attachImg" alt="待发送的图片" />
+        <button id="btnAttachClear" class="attach-x" title="移除">×</button>
+      </div>
+      <div class="composer-row">
+        <button id="btnImage" class="icon-btn" title="发送图片">🖼</button>
+        <textarea id="input" rows="1" maxlength="4000" placeholder="说点什么…"></textarea>
+        <button id="btnSend" class="send-btn">发送</button>
+      </div>
+      <p class="composer-tip">Enter 发送 · Shift+Enter 换行 · 图片自动压缩到 1280px</p>
+    </div>
+  </main>
+
+  <aside id="membersPanel" class="members">
+    <header>
+      <h2 id="membersTitle">成员</h2>
+      <button id="btnCloseMembers" class="icon-btn only-mobile" title="收起">×</button>
+    </header>
+    <ul id="memberList" class="member-list"></ul>
+  </aside>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+<input id="fileImage" type="file" accept="image/*" hidden />
+<input id="fileAvatar" type="file" accept="image/*" hidden />
+
+<script src="/app.js"></script>
+</body>
+</html>
