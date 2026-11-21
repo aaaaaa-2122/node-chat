@@ -8,6 +8,7 @@ const { StringDecoder } = require('string_decoder');
 
 const P = require('./protocol');
 const { Store } = require('./store');
+const S = require('./secure');
 
 const { C2S, S2C, ERR, LIMITS } = P;
 
@@ -26,6 +27,9 @@ class Session {
     this.alive = true;
     this.lastActive = Date.now();
     this.rate = { count: 0, windowStart: Date.now() };
+    /** 加密信道；null 表示这条连接还是明文 */
+    this.crypto = null;
+    this.fp = null; // 客户端看到的服务端指纹（握手成功时填）
   }
 
   get authenticated() {
@@ -55,7 +59,11 @@ class ChatServer {
     this.dataDir = options.dataDir || path.join(__dirname, '..', 'data');
     this.serverName = options.serverName || 'node-chat-server';
     this.demo = options.demo || false;
+    /** 只接受加密连接（默认 false：明文照常可用，兼容旧客户端） */
+    this.requireSecure = options.requireSecure === undefined ? false : !!options.requireSecure;
     this.store = new Store(this.dataDir);
+    /** 服务端长期身份（Ed25519），启动时加载或生成 */
+    this.identity = null;
     /** username -> Session */
     this.sessions = new Map();
     /** 所有连接（含未认证），停服时统一销毁 */
@@ -69,6 +77,12 @@ class ChatServer {
 
   // ------------------------------------------------------------------ 启停
   async start() {
+    this.identity = S.loadOrCreateIdentity(this.dataDir);
+    if (this.requireSecure) {
+      process.stdout.write(`[secure] 只接受加密连接，服务端指纹 ${this.identity.fp}\n`);
+    } else {
+      process.stdout.write(`[secure] 加密可用（明文仍接受），服务端指纹 ${this.identity.fp}\n`);
+    }
     this.store.load();
     if (this.demo) this._seedDemoUsers();
 
@@ -123,7 +137,18 @@ class ChatServer {
     socket.setNoDelay(true);
     this._sockets.add(socket);
     const session = new Session(socket, ++this._sessionSeq);
-    this._send(session, P.frame(S2C.SYSTEM, { event: 'welcome', server: this.serverName, version: P.VERSION }));
+    // 要求加密时不发欢迎帧——否则等于告诉明文客户端「你可以继续」
+    if (!this.requireSecure) {
+      this._send(
+        session,
+        P.frame(S2C.SYSTEM, {
+          event: 'welcome',
+          server: this.serverName,
+          version: P.VERSION,
+          secure: { supported: true, required: false, fp: this.identity.fp },
+        })
+      );
+    }
 
     socket.on('data', (chunk) => {
       session.lastActive = Date.now();
@@ -135,7 +160,29 @@ class ChatServer {
         if (Array.isArray(err.frames)) messages = err.frames;
         this._send(session, P.frame(S2C.ERROR, { code: err.code || 'bad_request', message: err.message }));
       }
-      for (const msg of messages) {
+      for (const raw of messages) {
+        let msg = raw;
+        if (session.crypto) {
+          // 已经协商好加密之后，只认密文帧。明文一律视为降级攻击。
+          try {
+            msg = session.crypto.open(raw);
+          } catch (e) {
+            this._send(session, P.frame(S2C.ERROR, { code: e.code || 'decrypt_failed', message: e.message }));
+            socket.destroy();
+            return;
+          }
+        }
+        if (this.requireSecure && !session.crypto && msg && msg.type !== C2S.SECURE) {
+          this._send(
+            session,
+            P.frame(S2C.SECURE_ERR, {
+              code: ERR.SECURE_REQUIRED,
+              message: '本服务端要求加密连接，请先发送 secure 握手',
+            })
+          );
+          socket.destroy();
+          return;
+        }
         try {
           this._dispatch(session, msg);
         } catch (err) {
@@ -186,6 +233,7 @@ class ChatServer {
     }
     const data = msg.data || {};
 
+    if (msg.type === C2S.SECURE) return this._handleSecure(session, data, msg.id);
     if (msg.type === C2S.AUTH) return this._handleAuth(session, data, msg.id);
     if (msg.type === C2S.PING) return this._send(session, P.frame(S2C.PONG, { at: Date.now() }));
 
@@ -239,6 +287,33 @@ class ChatServer {
   }
 
   // ------------------------------------------------------------------ 认证
+  /**
+   * 加密握手。无状态、可重试：失败不主动断开，客户端可以再发一次 secure。
+   * 应答必须在 channel 生效前明文发出，所以顺序是「先发 secure_ok，再装 channel」。
+   */
+  _handleSecure(session, data, id) {
+    if (session.crypto) {
+      this._send(session, P.frame(S2C.SECURE_ERR, { code: 'already_secure', message: '这条连接已经加密过了' }, id));
+      return;
+    }
+    let result;
+    try {
+      result = S.acceptHandshake(this.identity, data || {});
+    } catch (e) {
+      this._send(
+        session,
+        P.frame(S2C.SECURE_ERR, { code: e.code || 'handshake_failed', message: e.message }, id)
+      );
+      return;
+    }
+    this._send(session, P.frame(S2C.SECURE_OK, result.reply, id));
+    session.crypto = result.channel;
+    session.fp = result.reply.fp;
+    // 密文整帧 base64 后体积变大，换更宽松的行上限
+    session.parser = new P.LineParser(LIMITS.MAX_LINE_SECURE);
+    process.stdout.write(`[secure] #${session.id} 加密握手完成（fp ${session.fp}）\n`);
+  }
+
   _handleAuth(session, data, id) {
     const username = data.username;
     const password = data.password;
@@ -475,7 +550,9 @@ class ChatServer {
 
   _send(session, obj) {
     if (!session || !session.socket || session.socket.destroyed) return;
-    session.socket.write(P.encode(obj));
+    // 加密连接：整帧封进 {"e":"..."}，分帧方式（一行 JSON）保持不变
+    const outbound = session.crypto ? session.crypto.seal(obj) : obj;
+    session.socket.write(P.encode(outbound));
   }
 
   _sendToAll(frameObj, exceptUser) {
@@ -537,6 +614,7 @@ if (require.main === module) {
     dataDir: args.data,
     serverName: args.name,
     demo: args.demo,
+    requireSecure: args.requireSecure,
   });
 
   server
@@ -595,6 +673,7 @@ function parseArgs(argv) {
     else if (a === '--name') out.serverName = argv[++i];
     else if (a === '--demo') out.demo = true;
     else if (a === '--no-stdin') out.noStdin = true;
+    else if (a === '--require-secure') out.requireSecure = true;
     else if (a === '--help' || a === '-h') {
       console.log(`用法: node src/server.js [选项]
 
@@ -605,6 +684,7 @@ function parseArgs(argv) {
   --name <name>     服务端名称（默认 node-chat-server）
   --demo            创建演示账号 alice/bob/carol（密码 123456）与 general/dev 群
   --no-stdin        不监听标准输入广播
+  --require-secure  只接受加密连接（默认 false：明文客户端照常可用）
   -h, --help        显示帮助`);
       process.exit(0);
     }

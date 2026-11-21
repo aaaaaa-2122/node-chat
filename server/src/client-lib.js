@@ -5,6 +5,7 @@ const { EventEmitter } = require('events');
 const { StringDecoder } = require('string_decoder');
 
 const P = require('./protocol');
+const SB = require('./secure');
 const { C2S, S2C, ERR } = P;
 
 /**
@@ -26,6 +27,14 @@ class ChatClient extends EventEmitter {
     this.password = options.password || '';
     this.autoAuth = options.autoAuth !== false;
     this.timeout = options.timeout || 10000;
+    /** 是否走应用层加密（服务端同时支持明文与加密） */
+    this.secure = !!options.secure;
+    /** known_hosts 路径；false 表示不落盘（只在本连接内校验） */
+    this.pinFile = options.pinFile;
+    this.onFingerprint = options.onFingerprint || null;
+    this.crypto = null;
+    this.fingerprint = null;
+    this._pins = null;
     this.received = { messages: [], groups: [], systems: [], presences: [] };
 
     this.socket = null;
@@ -68,17 +77,20 @@ class ChatClient extends EventEmitter {
         socket.removeListener('error', onError);
         socket.removeListener('connect', onConnect);
       };
-      const onConnect = () => {
+      const onConnect = async () => {
         cleanup();
-        this._startHeartbeat();
-        this.emit('connect');
-        if (!this.autoAuth) return resolve(this);
-        this._authenticate()
-          .then(() => resolve(this))
-          .catch((err) => {
-            socket.destroy();
-            reject(err);
-          });
+        try {
+          // 先协商加密（如果开了），再认证——这样密码本身也在密文里
+          if (this.secure) await this._secureHandshake();
+          this._startHeartbeat();
+          this.emit('connect');
+          if (!this.autoAuth) return resolve(this);
+          await this._authenticate();
+          resolve(this);
+        } catch (err) {
+          socket.destroy();
+          reject(err);
+        }
       };
 
       socket.once('error', onError);
@@ -111,6 +123,68 @@ class ChatClient extends EventEmitter {
     });
   }
 
+  _pinStore() {
+    if (this.pinFile === false) return null;
+    if (!this._pins) this._pins = new SB.PinStore(this.pinFile || undefined);
+    return this._pins;
+  }
+
+  /**
+   * 加密握手。
+   * 首次连接走 TOFU：把服务端身份指纹记下来；之后指纹不一致直接拒绝连接。
+   */
+  _secureHandshake() {
+    return new Promise((resolve, reject) => {
+      const keys = SB.newX25519();
+      const pubRaw = SB.rawPublicKey(keys.publicKey);
+
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.off('secure_ok', onOk);
+        this.off('secure_err', onErr);
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error('加密握手超时'));
+      }, this.timeout);
+
+      const onOk = (data) => {
+        cleanup();
+        try {
+          const pins = this._pinStore();
+          const pinned = pins ? pins.get(this.host, this.port) : null;
+          const result = SB.finishHandshake(data, keys, pubRaw, pinned);
+          if (pins && !pinned) {
+            try {
+              pins.set(this.host, this.port, result.fp);
+            } catch (writeErr) {
+              // 记不住指纹不影响本次连接（已经校验过签名），但必须让人看见
+              this.pinWarning = writeErr.message;
+              this._emitError(writeErr);
+            }
+          }
+          this.crypto = result.channel;
+          this.fingerprint = result.fp;
+          if (typeof this.onFingerprint === 'function') this.onFingerprint(result.fp, !pinned);
+          this.emit('secure', { fp: result.fp, pinned: !!pinned });
+          resolve(result);
+        } catch (err) {
+          reject(err);
+        }
+      };
+      const onErr = (data) => {
+        cleanup();
+        const err = new Error((data && data.message) || '服务端拒绝加密握手');
+        err.code = (data && data.code) || 'secure_rejected';
+        reject(err);
+      };
+
+      this.once('secure_ok', onOk);
+      this.once('secure_err', onErr);
+      this._write(C2S.SECURE, { v: SB.SECURE_VERSION, cpub: SB.b64(pubRaw) });
+    });
+  }
+
   _startHeartbeat() {
     this._heartbeat = setInterval(() => {
       if (!this._closed) this._write(C2S.PING, {});
@@ -127,7 +201,9 @@ class ChatClient extends EventEmitter {
 
   _write(type, data, id) {
     if (!this.socket || this.socket.destroyed) throw new Error('连接不可用');
-    this.socket.write(P.encode(P.frame(type, data, id)));
+    const frame = P.frame(type, data, id);
+    // 加密后整帧封进 {"e":"..."}，分帧规则不变
+    this.socket.write(P.encode(this.crypto ? this.crypto.seal(frame) : frame));
   }
 
   _onData(chunk) {
@@ -139,7 +215,19 @@ class ChatClient extends EventEmitter {
       if (Array.isArray(err.frames)) frames = err.frames;
       this._emitError(err);
     }
-    for (const frame of frames) this._onFrame(frame);
+    for (const raw of frames) {
+      let frame = raw;
+      if (this.crypto) {
+        try {
+          frame = this.crypto.open(raw);
+        } catch (err) {
+          this._emitError(err);
+          if (this.socket) this.socket.destroy();
+          return;
+        }
+      }
+      this._onFrame(frame);
+    }
   }
 
   _onFrame(frame) {
@@ -162,6 +250,12 @@ class ChatClient extends EventEmitter {
     }
 
     switch (type) {
+      case S2C.SECURE_OK:
+        this.emit('secure_ok', data);
+        return;
+      case S2C.SECURE_ERR:
+        this.emit('secure_err', data);
+        return;
       case S2C.AUTH_OK:
         this.emit('auth_ok', data);
         return;
