@@ -1,6 +1,6 @@
 {
   "name": "agentbus",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "把 Node Chat 变成 agent 信箱：守护进程持有连接，watchdog 负责唤醒",
   "main": "src/daemon.js",
