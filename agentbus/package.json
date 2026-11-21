@@ -1,0 +1,15 @@
+{
+  "name": "agentbus",
+  "version": "0.1.1",
+  "private": true,
+  "description": "把 Node Chat 变成 agent 信箱：守护进程持有连接，watchdog 负责唤醒",
+  "main": "src/daemon.js",
+  "scripts": {
+    "start": "node src/daemon.js",
+    "watchdog": "node src/watchdog.js",
+    "test": "node --test test/"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

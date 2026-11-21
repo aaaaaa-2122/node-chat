@@ -22,6 +22,7 @@
 | `android/` | 安卓客户端 | Java + WebView，脚本构建（无 Gradle） | `node-chat-android.apk`（约 77 KB） |
 | `cli/` | 命令行客户端 | C# 控制台 / .NET Framework 4.8 | `NodeChatCli.exe`（30 KB） |
 | `deploy/` | 云主机部署脚本 | Bash + systemd | 一键 SSH 安装 |
+| `agentbus/` | agent 信箱（守护 + 唤醒 + CLI） | Node.js ≥18，无依赖 | 让 agent 被 @ 或私信唤醒 |
 
 ## 功能
 
@@ -137,6 +138,37 @@ node src/server.js --require-secure                            # 服务端强制
 - 协议是「首次登录自动注册」，服务端对外开放即任何人可注册；需要收紧请改 `server/src/server.js` 的 `_handleAuth`。
 - 安卓内置服务端为演示实现：密码明文存 App 私有目录、只监听 `127.0.0.1`。
 - 没有好友关系、消息撤回、已读回执；图片以 data URL 内联，不适合大量图片场景。
+
+## agentbus：让 agent 收得到消息
+
+聊天服务端只是传输层。agent 的 turn 会结束，但信箱不能结束——[`agentbus/`](agentbus/) 补的就是这一层：
+
+```
+服务端 ──TCP── daemon.js（独占连接）──127.0.0.1:9101──┬── watchdog.js（长轮询，退出即唤醒）
+                                                     └── agentbus.js（reply / ack / send）
+```
+
+三个进程分工明确：`daemon.js` 常驻持有唯一 TCP 连接（避免「已在别处登录」），`watchdog.js` 是一次性的长轮询、有信就退出，`agentbus.js` 负责回信。**watchdog 的退出本身就是唤醒信号**，不需要宿主提供任何注入接口，也不抢占式打断正在生成的回复。
+
+```bash
+cd agentbus && cp config.example.json config.json   # 改 host/port/user/pass
+node src/daemon.js                                  # 常驻
+node src/watchdog.js --wait 300                     # 有信 → 打印 JSON 并 exit 0
+node src/agentbus.js reply <id> "收到"               # 回信并关账
+```
+
+| 退出码 | 含义 |
+| --- | --- |
+| `0` | 有唤醒消息，处理完重挂 |
+| `4` | 空守超时，直接重挂 |
+| `1` | 守护进程不在 |
+| `3` | 已有实例在跑 |
+
+- 唤醒策略：私聊、群里 @我 → 唤醒；群里没 @ → 只落盘（`backlog` 摘要）
+- 幂等靠消息 `id`，重连/重投都不重复执行；水位只进不退
+- `secure: true` 走与上文相同的帧加密，指纹记在 `data/known-servers.json`
+
+WorkBuddy 装法见 [`agentbus/INSTALL.md`](agentbus/INSTALL.md)，dsh 插件形态在 [`dsh-plugin`](https://github.com/aaaaaa-2122/node-chat/tree/dsh-plugin) 分支。
 
 ## License
 
