@@ -15,13 +15,17 @@
 #
 set -euo pipefail
 
+# sudo 默认保留调用者的 HOME（这里是 /home/ubuntu），acme.sh 会跟着装到
+# /home/ubuntu/.acme.sh，而 root 的 cron 又够不着。统一钉到 /root。
+export HOME=/root
+
 DOMAIN="${1:-}"
 EMAIL="${2:-}"
 APP_DIR="/opt/node-chat-web"
 ACME_ROOT="/var/www/acme"
 CERT_DIR="$APP_DIR/certs"
 SERVICE="/etc/systemd/system/node-chat-web.service"
-ACME_SH="/root/.acme.sh/acme.sh"
+ACME_SH="$HOME/.acme.sh/acme.sh"
 UPSTREAM_PORT="9099"
 
 blue() { printf '\033[36m%s\033[0m\n' "$*"; }
@@ -71,19 +75,41 @@ ok "ACME 路径可用（$ACME_ROOT）"
 
 # ------------------------------------------------------------------ 3 acme.sh
 blue "==> 3/5 安装 acme.sh"
+# 官方安装脚本要从 GitHub 拉 master.tar.gz，国内常被掐（curl 52）且**失败仍返回 0**，
+# 所以不能只看退出码，必须验证文件真的存在。备选：直接抓单文件。
+install_acme() {
+  local mail="${EMAIL:-admin@$DOMAIN}" src
+  if curl -fsSL --max-time 30 https://get.acme.sh -o /tmp/get-acme.sh 2>/dev/null; then
+    bash /tmp/get-acme.sh "email=$mail" >/tmp/acme-install.log 2>&1 || true
+    [ -x "$ACME_SH" ] && return 0
+  fi
+  for src in \
+    "https://cdn.jsdelivr.net/gh/acmesh-official/acme.sh@master/acme.sh" \
+    "https://gitee.com/neilpang/acme.sh/raw/master/acme.sh" \
+    "https://raw.githubusercontent.com/acmesh-official/acme.sh/master/acme.sh"; do
+    if curl -fsSL --max-time 60 "$src" -o /tmp/acme.sh.raw 2>/dev/null && head -1 /tmp/acme.sh.raw | grep -q '^#!'; then
+      mkdir -p "$HOME/.acme.sh"
+      cp /tmp/acme.sh.raw "$HOME/.acme.sh/acme.sh"
+      chmod +x "$HOME/.acme.sh/acme.sh"
+      "$HOME/.acme.sh/acme.sh" --install -m "$mail" >/tmp/acme-install.log 2>&1 || true
+      [ -x "$ACME_SH" ] && { warn "官方安装脚本失败，已从 $src 手动装好"; return 0; }
+    fi
+  done
+  return 1
+}
+
 if [ -x "$ACME_SH" ]; then
-  ok "acme.sh 已存在：$("$ACME_SH" --version 2>/dev/null | head -1)"
+  ok "acme.sh 已存在"
 else
-  curl -fsSL https://get.acme.sh | sh -s -- "email=${EMAIL:-admin@$DOMAIN}" >/tmp/acme-install.log 2>&1 \
-    || die "acme.sh 安装失败，看 /tmp/acme-install.log"
-  ok "acme.sh 已安装"
+  install_acme || die "acme.sh 安装失败，看 /tmp/acme-install.log"
+  ok "acme.sh 已安装：$("$ACME_SH" --version 2>/dev/null | head -1)"
 fi
 
 # ------------------------------------------------------------------ 4 签发
 blue "==> 4/5 签发证书（webroot 模式，网关继续对外服务）"
 "$ACME_SH" --set-default-ca --server letsencrypt >/dev/null 2>&1 || true
 
-if [ -d "/root/.acme.sh/$DOMAIN" ]; then
+if [ -d "$HOME/.acme.sh/$DOMAIN" ]; then
   warn "已有该域名的证书，改用 --force 重新签发"
   "$ACME_SH" --issue -d "$DOMAIN" -w "$ACME_ROOT" --server letsencrypt --force
 else
@@ -103,7 +129,11 @@ openssl x509 -in "$CERT_DIR/fullchain.pem" -noout -subject -dates 2>/dev/null | 
 # ------------------------------------------------------------------ 5 改 systemd
 blue "==> 5/5 切到 443"
 NODE_BIN="$(command -v node)"
-EXEC="$NODE_BIN src/gateway.js --host 0.0.0.0 --port 443 --upstream 127.0.0.1:$UPSTREAM_PORT --root $APP_DIR/public --tls-cert $CERT_DIR/fullchain.pem --tls-key $CERT_DIR/key.pem --redirect-port 80 --acme-root $ACME_ROOT"
+# domain.txt 给 install-web.sh 用：以后普通重部署还能知道该对哪个域名跳转
+printf '%s' "$DOMAIN" > "$CERT_DIR/domain.txt"
+chown nodechat:nodechat "$CERT_DIR/domain.txt"
+chmod 644 "$CERT_DIR/domain.txt"
+EXEC="$NODE_BIN src/gateway.js --host 0.0.0.0 --port 443 --upstream 127.0.0.1:$UPSTREAM_PORT --root $APP_DIR/public --tls-cert $CERT_DIR/fullchain.pem --tls-key $CERT_DIR/key.pem --redirect-port 80 --acme-root $ACME_ROOT --tls-host $DOMAIN"
 
 cp -a "$SERVICE" "$SERVICE.bak.$(date +%Y%m%d%H%M%S)"
 if grep -q '^ExecStart=' "$SERVICE"; then
@@ -152,6 +182,6 @@ echo
 ok "HTTPS 已就绪：https://$DOMAIN/"
 echo "   证书路径：$CERT_DIR/fullchain.pem  $CERT_DIR/key.pem"
 echo "   续期：    acme.sh 自带 cron，证书更新后网关自动热加载（5 分钟内）"
-echo "   手动续期：sudo $ACME_SH --cron --home /root/.acme.sh"
+echo "   手动续期：sudo $ACME_SH --cron --home $HOME/.acme.sh"
 echo "   回滚：    cp $SERVICE.bak.* $SERVICE && systemctl daemon-reload && systemctl restart node-chat-web"
 warn "云安全组要放通 443（80 保持放通，续期验证要用）"

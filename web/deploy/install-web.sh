@@ -49,8 +49,17 @@ PROBE_MODE="http"
 if [ -f "$APP_DIR/certs/fullchain.pem" ] && [ -f "$APP_DIR/certs/key.pem" ] && [ "${PLAIN:-0}" != "1" ]; then
   PORT="443"
   PROBE_MODE="https"
+  # 只对证书里的域名做 301：直接打 IP 的访问要保持明文可用
+  TLS_HOST=""
+  if [ -f "$APP_DIR/certs/domain.txt" ]; then
+    TLS_HOST="$(tr -d '\r\n' < "$APP_DIR/certs/domain.txt")"
+  elif command -v openssl >/dev/null 2>&1; then
+    TLS_HOST="$(openssl x509 -in "$APP_DIR/certs/fullchain.pem" -noout -subject 2>/dev/null \
+      | sed -n 's/.*CN *= *//p' | head -1)"
+  fi
   TLS_ARGS="--tls-cert $APP_DIR/certs/fullchain.pem --tls-key $APP_DIR/certs/key.pem --redirect-port 80 --acme-root /var/www/acme"
-  ok "检测到 $APP_DIR/certs，按 HTTPS 启动（443 + 80 跳转）"
+  [ -n "$TLS_HOST" ] && TLS_ARGS="$TLS_ARGS --tls-host $TLS_HOST"
+  ok "检测到 $APP_DIR/certs，按 HTTPS 启动（443 + 80 跳转，域名 ${TLS_HOST:-全部}）"
 fi
 
 mkdir -p "$APP_DIR"
