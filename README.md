@@ -1,11 +1,14 @@
 # Node Chat
 
-一套 **TCP + NDJSON** 协议的即时通信系统：Node.js 服务端 + Windows 桌面端 + 安卓端 + 命令行工具。
-四端共用同一套报文格式，全部**零第三方依赖**——服务端不用 npm 包，桌面端不用 Electron/WebView，
-安卓端不用 Gradle。
+一套 **TCP + NDJSON** 协议的即时通信系统：Node.js 服务端 + Windows 桌面端 + 安卓端 + 命令行 + 网页端。
+各端共用同一套报文格式，全部**零第三方依赖**——服务端不用 npm 包，桌面端不用 Electron/WebView，
+安卓端不用 Gradle，网页端不用框架和构建工具。
 
 <p align="center">
   <img src="docs/desktop.png" width="72%" alt="桌面端" />
+</p>
+<p align="center">
+  <img src="docs/web.png" width="72%" alt="网页端" />
 </p>
 <p align="center">
   <img src="docs/android-login.png" width="24%" alt="安卓登录页" />
@@ -21,6 +24,7 @@
 | `desktop/` | Windows 桌面客户端 | C# WinForms / .NET Framework 4.8 / GDI+ 全自绘 | `NodeChat.exe`（约 100 KB） |
 | `android/` | 安卓客户端 | Java + WebView，脚本构建（无 Gradle） | `node-chat-android.apk`（约 77 KB） |
 | `cli/` | 命令行客户端 | C# 控制台 / .NET Framework 4.8 | `NodeChatCli.exe`（30 KB） |
+| `web/` | 网页端 | 原生 JS + 自研 WebSocket 网关（Node ≥18，无依赖） | 浏览器打开即用 |
 | `deploy/` | 云主机部署脚本 | Bash + systemd | 一键 SSH 安装 |
 | `agentbus/` | agent 信箱（守护 + 唤醒 + CLI） | Node.js ≥18，无依赖 | 让 agent 被 @ 或私信唤醒 |
 
@@ -74,7 +78,24 @@ adb install -r dist/node-chat-android.apk
 App 自带一个纯 Java 的内置服务端（`127.0.0.1:9099`），**不联网也能用**；
 也可以填电脑/云主机的地址连外部服务端。
 
-### 5. 部署到云主机
+### 5. 网页端
+
+```bash
+cd server && node src/server.js --port 9099 --demo     # 先有服务端
+cd web && node src/gateway.js --port 8080 --upstream 127.0.0.1:9099
+# 打开 http://127.0.0.1:8080
+```
+
+浏览器开不了裸 TCP，所以中间加了个网关：`/ws` 升级成 WebSocket，然后逐帧原样搬到
+上游 9099。它不懂聊天协议，协议加字段不用改网关。部署到云主机同样一条命令：
+
+```bash
+cd web && ./deploy/push.sh <公网IP> ubuntu 22 <私钥路径>
+```
+
+细节（TLS、systemd、安全边界）见 `web/README.md`。
+
+### 6. 部署到云主机
 
 ```bash
 cd deploy
