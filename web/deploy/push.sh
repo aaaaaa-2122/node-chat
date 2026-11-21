@@ -39,7 +39,7 @@ echo "==> 打包"
 cd "$HERE"
 rm -f ./deploy.tgz
 # 统一 LF：CRLF 会让远端 bash 报 "pipefail: invalid option name"
-sed -i 's/\r$//' deploy/install-web.sh deploy/push.sh 2>/dev/null || true
+sed -i 's/\r$//' deploy/install-web.sh deploy/push.sh deploy/enable-https.sh 2>/dev/null || true
 
 rm -rf ./.pack && mkdir -p ./.pack/app
 cp -a src ./.pack/app/src
@@ -47,7 +47,8 @@ cp -a public ./.pack/app/public
 cp -a README.md ./.pack/app/README.md
 cp -a package.json ./.pack/app/package.json 2>/dev/null || true
 cp -a deploy/install-web.sh ./.pack/install-web.sh
-tar czf ./deploy.tgz -C ./.pack app install-web.sh
+cp -a deploy/enable-https.sh ./.pack/enable-https.sh
+tar czf ./deploy.tgz -C ./.pack app install-web.sh enable-https.sh
 rm -rf ./.pack
 echo "    $(du -h ./deploy.tgz | cut -f1)  deploy.tgz"
 

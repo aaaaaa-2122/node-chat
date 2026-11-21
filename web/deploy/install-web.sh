@@ -43,6 +43,16 @@ else
   ok "已创建系统用户 nodechat"
 fi
 
+# 认证过 HTTPS 的机器上重装，不能把单元改回明文 —— 状态以证书文件为准
+TLS_ARGS=""
+PROBE_MODE="http"
+if [ -f "$APP_DIR/certs/fullchain.pem" ] && [ -f "$APP_DIR/certs/key.pem" ] && [ "${PLAIN:-0}" != "1" ]; then
+  PORT="443"
+  PROBE_MODE="https"
+  TLS_ARGS="--tls-cert $APP_DIR/certs/fullchain.pem --tls-key $APP_DIR/certs/key.pem --redirect-port 80 --acme-root /var/www/acme"
+  ok "检测到 $APP_DIR/certs，按 HTTPS 启动（443 + 80 跳转）"
+fi
+
 mkdir -p "$APP_DIR"
 # 保留旧的 public 备份，便于回滚
 if [ -d "$APP_DIR/public" ]; then
@@ -69,7 +79,7 @@ Type=simple
 User=nodechat
 Group=nodechat
 WorkingDirectory=$APP_DIR
-ExecStart=$NODE_BIN src/gateway.js --host 0.0.0.0 --port $PORT --upstream 127.0.0.1:$UPSTREAM --root $APP_DIR/public
+ExecStart=$NODE_BIN src/gateway.js --host 0.0.0.0 --port $PORT --upstream 127.0.0.1:$UPSTREAM --root $APP_DIR/public $TLS_ARGS
 Restart=always
 RestartSec=2
 
@@ -96,6 +106,7 @@ ok "服务已启动（node-chat-web.service）"
 blue "==> 4/5 放通系统防火墙"
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
   ufw allow "$PORT"/tcp >/dev/null && ok "ufw 已放通 $PORT/tcp"
+  [ -n "$TLS_ARGS" ] && ufw allow 80/tcp >/dev/null && ok "ufw 已放通 80/tcp（跳转与续期验证）"
 else
   warn "系统防火墙未启用（ufw 未激活），跳过"
 fi
@@ -109,15 +120,24 @@ else
   die "服务没起来，看上面的日志"
 fi
 
-if curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then
-  ok "本地探活通过：$(curl -fsS "http://127.0.0.1:$PORT/healthz")"
+if [ "$PROBE_MODE" = "https" ]; then
+  HEALTH="$(curl -fsSk --max-time 6 "https://127.0.0.1:$PORT/healthz" 2>/dev/null || true)"
+else
+  HEALTH="$(curl -fsS --max-time 6 "http://127.0.0.1:$PORT/healthz" 2>/dev/null || true)"
+fi
+if [ -n "$HEALTH" ]; then
+  ok "本地探活通过：$HEALTH"
 else
   warn "本地探活失败，可能是端口被占或启动慢"
 fi
 
 IP="$(curl -fsS --max-time 3 https://api.ipify.org 2>/dev/null || echo '<公网IP>')"
 echo
-ok "网页端地址：http://$IP:$PORT/"
+if [ "$PROBE_MODE" = "https" ]; then
+  ok "网页端地址：https://$IP:$PORT/（配了域名就是 https://<域名>/）"
+else
+  ok "网页端地址：http://$IP:$PORT/"
+fi
 echo "   查看日志：sudo journalctl -u node-chat-web -f"
 echo "   重启：    sudo systemctl restart node-chat-web"
 echo "   改端口：  sudo bash install-web.sh 8080 $UPSTREAM"
