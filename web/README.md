@@ -73,6 +73,9 @@ sudo bash install-web.sh 80 9099
 
 ## 上 HTTPS
 
+前提是**自有域名**——能自己改 NS 委派的那种。第三方公共子域服务分给你的子域不满足
+这个条件（zone 归服务方），详见下面「想用 Cloudflare 隧道绕过去」一节。
+
 有了域名之后一条命令：
 
 ```bash
@@ -116,6 +119,26 @@ curl -sk --resolve nodechat.example.com:443:<服务器IP> https://nodechat.examp
 
 > 结论：`--tls-host` 不设时，80 端口会把所有 Host 都跳到 https。国内未备案机器一旦
 > 开了 HTTPS，务必设上它，否则连 `http://<IP>/` 这种能用的入口也会被自己跳死。
+
+### 想用 Cloudflare 隧道绕过去？先确认域名是你自己的
+
+思路是让机器主动出站连 Cloudflare，用户访问 CF 边缘，机房只看得到一条加密长连接，
+看不到里面的 SNI。链路本身能通，`enable-tunnel.sh` 负责安装。
+
+但有两个前提和一个代价：
+
+- **域名必须自有、且能改 NS 委派。** 第三方公共子域服务（例如 `xxx.是.gay` 这类
+  由别人的 zone 免费分发子域的服务）不满足：zone 归服务方，你在自己账号里添加它只会
+  永远停在 Pending Nameserver Update，因为 `是.gay` 的 NS 不由你控制。另外 CF 免费版
+  只能添加二级域，`nodechat.是.gay` 这种三级域属于 Business 功能。
+- **落点改不了。** 国内出口到 Cloudflare anycast 固定走美西（实测 `lax09`/`lax11`），
+  `--protocol http2` 仍是 `lax01`，`--region apac` 这个区域并不存在（只有 us/eu），
+  新版也移除了手动指定边缘的 `--edge`。
+- **代价是延迟。** 同一台机器实测 A→B 群消息投递：经隧道 **337 ms**，直连 **14 ms**，
+  差 24 倍。握手从 53 ms 涨到 800~1000 ms。功能完好，但交互明显发涩。
+
+结论：隧道只在「已经有一个能改 NS 的自有域名」时才值得用；否则直接打 IP 更快。
+装之前还要留意机器内存——QUIC 需要大缓冲，2 GB 以下的机器建议先确认余量。
 
 ## 安全说明
 
