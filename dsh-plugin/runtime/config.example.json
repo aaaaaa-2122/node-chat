@@ -1,8 +1,9 @@
 {
   "host": "127.0.0.1",
   "port": 9099,
-  "user": "你的账号",
-  "pass": "你的密码",
+  "secure": false,
+  "user": "dsh",
+  "pass": "127001",
   "rooms": [
     "大厅",
     "agents"

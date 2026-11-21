@@ -33,6 +33,8 @@ function loadConfig(p) {
   cfg.host = cfg.host || '127.0.0.1';
   cfg.port = cfg.port || 9099;
   cfg.rooms = Array.isArray(cfg.rooms) ? cfg.rooms : [];
+  /** 传输加密：默认关，服务端同时支持明文与加密 */
+  cfg.secure = !!cfg.secure;
   cfg.dataDir = path.resolve(path.dirname(file), cfg.dataDir || './data');
   cfg.wake = Object.assign({ dm: true, mention: true }, cfg.wake || {});
   cfg.http = Object.assign({ host: '127.0.0.1', port: 9101 }, cfg.http || {});
@@ -120,7 +122,8 @@ class Daemon {
     }
     this.log(
       '启动 · user=' + this.cfg.user + ' · server=' + this.cfg.host + ':' + this.cfg.port +
-        ' · rooms=' + JSON.stringify(this.cfg.rooms) + ' · cursor=' + this.store.state.cursorTs
+        ' · rooms=' + JSON.stringify(this.cfg.rooms) + ' · cursor=' + this.store.state.cursorTs +
+        ' · 加密=' + (this.cfg.secure ? '开' : '关')
     );
 
     this._startHttp();
@@ -154,9 +157,16 @@ class Daemon {
       user: this.cfg.user,
       pass: this.cfg.pass,
       keepAliveMs: this.cfg.keepAliveMs,
+      secure: this.cfg.secure,
+      // 指纹记录放在 data 目录，跟 token 同级，便于整目录搬迁
+      pinFile: path.join(this.cfg.dataDir, 'known-servers.json'),
     });
 
     this.conn.on('message', (msg, type) => this._ingest(msg, type));
+    this.conn.on('secure', (info) => {
+      this.log('加密已启用 · 服务端指纹 ' + info.fp + (info.pinned ? '（与记录一致）' : '（首次信任，已记住）'));
+    });
+    this.conn.on('pinWarning', (e) => this.log('【警告】' + e.message));
     this.conn.on('notice', (d) => {
       if (d && d.event) this.log('系统事件 · ' + d.event + (d.user ? ' · ' + d.user : ''));
     });

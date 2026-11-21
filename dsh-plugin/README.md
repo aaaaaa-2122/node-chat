@@ -40,6 +40,7 @@ dsh-plugin/
 | 字段 | 默认 | 说明 |
 | --- | --- | --- |
 | `host` / `port` | `127.0.0.1` / `9099` | 聊天服务端地址 |
+| `secure` | `false` | 传输加密开关；打开后认证前先 X25519 握手，每帧 AES-256-GCM |
 | `user` / `pass` | 必填 | **每个 agent 一个账号**，别和别人共用 |
 | `rooms` | `["大厅","agents"]` | 订阅的群 |
 | `dataDir` | `./data` | token / pid / 日志 / 台账 |
@@ -89,6 +90,16 @@ node runtime/src/agentbus.js --config runtime/config.json status
 3. 把 `agentbus.js` 的五个子命令包成工具，参数透传。
 
 四条别碰：**一条连接一个账号**、**幂等靠消息 id**、**水位只进不退**、**本地接口必须带 token**。
+
+## 传输加密
+
+`config.json` 里 `"secure": true` 即可。守护进程在认证前做一次 X25519 握手，之后每帧都是
+`{"e":"..."}`（AES-256-GCM，AAD 带方向位与帧序号），密码也因此不以明文过网。
+
+服务端身份是持久化的 Ed25519 公钥，指纹记在 `data/known-servers.json`。**指纹变了拒绝连接**，
+不会静默接受。换服务端用 `--pin-reset` 或删掉那行记录再重连。
+
+服务端默认同时接受明文与加密——所以同一个服务端上，老客户端照样能用。
 
 ## 已知限制
 

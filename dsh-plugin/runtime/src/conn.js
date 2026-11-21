@@ -10,6 +10,7 @@
 const net = require('net');
 const { EventEmitter } = require('events');
 const { StringDecoder } = require('string_decoder');
+const SB = require('./secure');
 
 /** 服务端在 5 分钟无数据时踢人，所以保活必须小于这个值 */
 const DEFAULT_KEEPALIVE_MS = 120 * 1000;
@@ -23,6 +24,12 @@ class ChatConn extends EventEmitter {
     this.user = opts.user;
     this.pass = opts.pass;
     this.keepAliveMs = opts.keepAliveMs || DEFAULT_KEEPALIVE_MS;
+    /** 是否走应用层加密；服务端同时支持明文与加密 */
+    this.secure = !!opts.secure;
+    /** 服务端指纹记录文件；false 表示不落盘 */
+    this.pinFile = opts.pinFile;
+    this.crypto = null;
+    this.fingerprint = null;
 
     this._socket = null;
     this._decoder = null;
@@ -58,17 +65,20 @@ class ChatConn extends EventEmitter {
         reject(err);
       };
 
-      socket.once('connect', () => {
-        this._auth()
-          .then((info) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timer);
-            this.authInfo = info;
-            this._startKeepAlive();
-            resolve(info);
-          })
-          .catch(fail);
+      socket.once('connect', async () => {
+        try {
+          // 先协商加密，再认证——密码因此不会以明文过网
+          if (this.secure) await this._secure();
+          const info = await this._auth();
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          this.authInfo = info;
+          this._startKeepAlive();
+          resolve(info);
+        } catch (err) {
+          fail(err);
+        }
       });
 
       socket.on('data', (chunk) => this._onData(chunk));
@@ -87,6 +97,32 @@ class ChatConn extends EventEmitter {
       // 认证失败服务端回 auth_err，需要单独识别
       errorTypes: { auth_err: 'auth_failed' },
     });
+  }
+
+  /** 加密握手（TOFU：首次记指纹，之后不一致就拒绝连接） */
+  async _secure() {
+    const keys = SB.newX25519();
+    const pubRaw = SB.rawPublicKey(keys.publicKey);
+    const data = await this._request('secure', { v: SB.SECURE_VERSION, cpub: SB.b64(pubRaw) }, {
+      expectType: 'secure_ok',
+      errorTypes: { secure_err: 'secure_rejected' },
+      timeoutMs: 10000,
+    });
+    const pins = this.pinFile === false ? null : new SB.PinStore(this.pinFile);
+    const pinned = pins ? pins.get(this.host, this.port) : null;
+    const result = SB.finishHandshake(data, keys, pubRaw, pinned);
+    if (pins && !pinned) {
+      try {
+        pins.set(this.host, this.port, result.fp);
+      } catch (writeErr) {
+        // 记不住指纹不影响本次连接（签名已校验），但必须让守护日志看见
+        this.pinWarning = writeErr.message;
+        this.emit('pinWarning', writeErr);
+      }
+    }
+    this.crypto = result.channel;
+    this.fingerprint = result.fp;
+    this.emit('secure', { fp: result.fp, pinned: !!pinned });
   }
 
   _onData(chunk) {
@@ -109,6 +145,15 @@ class ChatConn extends EventEmitter {
       } catch (e) {
         continue;
       }
+      if (this.crypto) {
+        try {
+          frame = this.crypto.open(frame);
+        } catch (e) {
+          this.emit('protocolError', e);
+          if (this._socket) this._socket.destroy();
+          return;
+        }
+      }
       this._dispatch(frame);
     }
   }
@@ -125,6 +170,12 @@ class ChatConn extends EventEmitter {
         const d = frame.data || {};
         const err = new Error(d.message || '服务端错误');
         err.code = d.code;
+        return w.reject(err);
+      }
+      if (type === 'secure_err') {
+        const d = frame.data || {};
+        const err = new Error(d.message || '服务端拒绝加密握手');
+        err.code = d.code || 'secure_rejected';
         return w.reject(err);
       }
       return w.resolve(frame.data || {});
@@ -185,7 +236,8 @@ class ChatConn extends EventEmitter {
   _write(frame) {
     const socket = this._socket;
     if (!socket || socket.destroyed) throw new Error('连接已断开');
-    socket.write(JSON.stringify(frame) + '\n');
+    const out = this.crypto ? this.crypto.seal(frame) : frame;
+    socket.write(JSON.stringify(out) + '\n');
   }
 
   _startKeepAlive() {
