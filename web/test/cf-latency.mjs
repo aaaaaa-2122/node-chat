@@ -1,6 +1,19 @@
-// 经 Cloudflare 隧道测 WebSocket 往返延迟
+// 经 WebSocket 测端到端投递延迟
+//
+// 用法：
+//   node cf-latency.mjs                          # 默认测本机 80 端口（明文）
+//   node cf-latency.mjs <host>                   # 测指定主机
+//   node cf-latency.mjs <host> <ws-url>          # 指定完整地址（如 wss://x/ws）
+//
+// 默认用两条连接互发**私信**测投递耗时，不写任何真实房间——早期版本往 #general
+// 发 probe- 消息，会污染线上房间，已改。私信与群消息在服务端走同一条广播链路，
+// 延迟数值等价。
+//
+// 跑完会留下若干 probe 开头的测试账号（私信记录随之），清理：
+//   python3 tools/clean-probe.py   （在服务器上以 root 执行，需先停 node-chat）
+
 const HOST = process.argv[2] || '203.0.113.10';
-// 网关只接受 /ws 路径的升级请求（见 gateway.js: url !== '/ws'）
+// 网关只接受 /ws 路径的升级请求（gateway.js: url !== '/ws' 即 400）
 const URL = process.argv[3] || `ws://${HOST}/ws`;
 
 let seq = 0;
@@ -11,7 +24,7 @@ function connect() {
     const t0 = Date.now();
     const ws = new WebSocket(URL);
     ws.addEventListener('open', () => resolve({ ws, handshakeMs: Date.now() - t0 }));
-    ws.addEventListener('error', (e) => reject(new Error('ws error')));
+    ws.addEventListener('error', () => reject(new Error('ws error')));
     ws.addEventListener('message', (ev) => {
       let m;
       try { m = JSON.parse(ev.data); } catch { return; }
@@ -36,19 +49,25 @@ function request(ws, type, data) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 (async () => {
-  const { ws, handshakeMs } = await connect();
-  console.log(`WebSocket 握手完成: ${handshakeMs} ms`);
+  const a = await connect();
+  console.log(`WebSocket 握手完成: ${a.handshakeMs} ms`);
 
-  const user = 'probe' + Math.random().toString(36).slice(2, 8);
-  const a = await request(ws, 'auth', { username: user, password: 'probe1234' });
-  console.log(`认证: ${a.ms.toFixed(0)} ms -> ${a.msg.type}`);
+  const tag = Math.random().toString(36).slice(2, 8);
+  const userA = 'probea' + tag;
+  const userB = 'probeb' + tag;
 
-  const j = await request(ws, 'join', { room: 'general' }).catch((e) => ({ ms: -1, msg: { type: 'err:' + e.message } }));
-  console.log(`进群: ${j.ms.toFixed(0)} ms -> ${j.msg.type}`);
+  const ra = await request(a.ws, 'auth', { username: userA, password: 'probe1234' });
+  console.log(`A 认证: ${ra.ms.toFixed(0)} ms -> ${ra.msg.type}`);
+  await sleep(100);
+
+  const b = await connect();
+  const rb = await request(b.ws, 'auth', { username: userB, password: 'probe1234' });
+  console.log(`B 认证: ${rb.ms.toFixed(0)} ms -> ${rb.msg.type}`);
+  await sleep(200);
 
   const rtts = [];
   for (let i = 0; i < 10; i++) {
-    const r = await request(ws, 'who', {});
+    const r = await request(a.ws, 'who', {});
     rtts.push(r.ms);
     await sleep(120);
   }
@@ -56,28 +75,25 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const avg = rtts.reduce((s, v) => s + v, 0) / rtts.length;
   console.log(`who RTT x10: min=${rtts[0].toFixed(0)} p50=${rtts[5].toFixed(0)} max=${rtts[9].toFixed(0)} avg=${avg.toFixed(0)} ms`);
 
-  // 端到端投递：A 发群消息，B 收到广播（两个独立连接）
-  const b = await connect();
-  await request(b.ws, 'auth', { username: user + 'b', password: 'probe1234' });
-  await request(b.ws, 'join', { room: 'general' });
-
+  // A -> B 私信，量 B 收到广播的时间
   let t0 = 0n;
   const delivered = await new Promise((resolve) => {
     const timer = setTimeout(() => resolve(null), 20000);
     const h = (ev) => {
       const m = JSON.parse(ev.data);
-      if (m.type === 'group' && JSON.stringify(m.data).includes('probe-')) {
-        clearTimeout(timer); b.ws.removeEventListener('message', h);
-        resolve(Number(process.hrtime.bigint() - t0) / 1e6);
-      }
+      if (m.type !== 'msg') return;
+      if (!JSON.stringify(m.data).includes('probe-')) return;
+      clearTimeout(timer);
+      b.ws.removeEventListener('message', h);
+      resolve(Number(process.hrtime.bigint() - t0) / 1e6);
     };
     b.ws.addEventListener('message', h);
     t0 = process.hrtime.bigint();
-    ws.send(JSON.stringify({ type: 'group', id: 'g' + Date.now(), data: { room: 'general', text: 'probe-' + Date.now() } }));
+    a.ws.send(JSON.stringify({ type: 'msg', id: 'm' + Date.now(), data: { to: userB, text: 'probe-' + Date.now() } }));
   });
-  console.log(`A→B 群消息投递: ${delivered === null ? '未收到广播' : delivered.toFixed(0) + ' ms'}`);
+  console.log(`A→B 私信投递: ${delivered === null ? '未收到广播' : delivered.toFixed(0) + ' ms'}`);
 
   b.ws.close();
-  ws.close();
-  process.exit(0);
+  a.ws.close();
+  process.exit(delivered === null ? 1 : 0);
 })().catch((e) => { console.error('FAIL:', e.message); process.exit(1); });
