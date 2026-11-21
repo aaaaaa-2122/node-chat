@@ -38,6 +38,9 @@ function parseArgs(argv) {
     maxFrame: 2 * 1024 * 1024,
     tlsCert: '',
     tlsKey: '',
+    // 有证书时再开一个明文端口：只做 ACME 验证和 301 跳转，不提供页面
+    redirectPort: 0,
+    acmeRoot: '/var/www/acme',
   };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
@@ -50,10 +53,15 @@ function parseArgs(argv) {
       out.upstreamPort = Number(p || 9099);
     } else if (a === '--root') out.root = path.resolve(next());
     else if (a === '--max-frame') out.maxFrame = Number(next());
+    else if (a === '--tls-cert') out.tlsCert = path.resolve(next());
+    else if (a === '--tls-key') out.tlsKey = path.resolve(next());
+    else if (a === '--redirect-port') out.redirectPort = Number(next());
+    else if (a === '--acme-root') out.acmeRoot = path.resolve(next());
     else if (a === '--help' || a === '-h') {
       process.stdout.write(
         '用法: node src/gateway.js [--port 8080] [--upstream 127.0.0.1:9099] [--root ./public]\n' +
-          '                             [--tls-cert cert.pem --tls-key key.pem]\n'
+          '                             [--tls-cert cert.pem --tls-key key.pem]\n' +
+          '                             [--redirect-port 80] [--acme-root /var/www/acme]\n'
       );
       process.exit(0);
     }
@@ -324,15 +332,73 @@ function bridge(socket, head, cfg, req) {
 }
 
 // ------------------------------------------------------------------ HTTP
+/** ACME http-01 验证：token 只认安全字符，文件从 acmeRoot 直读，不经过静态托管 */
+function serveAcme(req, res, acmeRoot) {
+  const token = req.url.split('?')[0].slice('/.well-known/acme-challenge/'.length);
+  if (!/^[A-Za-z0-9_-]{4,200}$/.test(token)) {
+    res.writeHead(404, { 'Content-Type': 'text/plain' }).end('not found');
+    return;
+  }
+  fs.readFile(path.join(acmeRoot, token), (err, data) => {
+    if (err) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' }).end('not found');
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'text/plain', 'Content-Length': data.length }).end(data);
+  });
+}
+
+/**
+ * acme.sh 续期会原地换掉证书文件。这里定期看 mtime，变了就热更——
+ * 不重启进程，正在连着的 WebSocket 也不会被踢掉。
+ */
+function watchCert(server, cfg) {
+  const stamp = () => {
+    try {
+      return fs.statSync(cfg.tlsCert).mtimeMs + fs.statSync(cfg.tlsKey).mtimeMs;
+    } catch (_) {
+      return 0;
+    }
+  };
+  let last = stamp();
+  const timer = setInterval(() => {
+    const now = stamp();
+    if (!now || now === last) return;
+    try {
+      server.setSecureContext({
+        cert: fs.readFileSync(cfg.tlsCert),
+        key: fs.readFileSync(cfg.tlsKey),
+      });
+      last = now;
+      console.log('[tls] 证书已热更新（无需重启）');
+    } catch (e) {
+      console.log('[tls] 证书热更新失败：' + e.message);
+    }
+  }, Number(process.env.CERT_CHECK_MS || 5 * 60 * 1000));
+  timer.unref();
+}
+
 function main() {
   const cfg = parseArgs(process.argv.slice(2));
   const clients = { open: 0 };
   const root = cfg.root;
+  const useTls = Boolean(cfg.tlsCert && cfg.tlsKey);
 
   const handler = (req, res) => {
+    // 证书还没签发时也要能访问这条路径，所以放在最前面、且不做任何跳转
+    if (req.url.startsWith('/.well-known/acme-challenge/')) {
+      serveAcme(req, res, cfg.acmeRoot);
+      return;
+    }
+
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'same-origin');
+    if (useTls) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
+
     if (req.url === '/healthz') {
       const body = JSON.stringify({
         ok: true,
+        tls: useTls,
         upstream: `${cfg.upstreamHost}:${cfg.upstreamPort}`,
         clients: clients.open,
         uptimeSec: Math.round(process.uptime()),
@@ -348,13 +414,21 @@ function main() {
   };
 
   // 有证书就上 HTTPS（WebSocket 自动变 wss，前端不用改）
-  const useTls = cfg.tlsCert && cfg.tlsKey;
-  const server = useTls
-    ? https.createServer(
-        { cert: fs.readFileSync(cfg.tlsCert), key: fs.readFileSync(cfg.tlsKey) },
-        handler
-      )
-    : http.createServer(handler);
+  let server;
+  if (useTls) {
+    let opts;
+    try {
+      opts = { cert: fs.readFileSync(cfg.tlsCert), key: fs.readFileSync(cfg.tlsKey) };
+    } catch (e) {
+      // 不降级：说好上 HTTPS 却静默跑明文，比直接起不来更危险
+      console.error(`证书读不了，拒绝以明文启动：${e.message}`);
+      process.exit(1);
+    }
+    server = https.createServer(opts, handler);
+    watchCert(server, cfg);
+  } else {
+    server = http.createServer(handler);
+  }
 
   server.on('upgrade', (req, socket, head) => {
     const url = req.url.split('?')[0];
@@ -380,8 +454,35 @@ function main() {
     );
   });
 
+  // 明文端口：ACME 验证 + 其余一律 301 到 https
+  let redirector = null;
+  if (useTls && cfg.redirectPort) {
+    const toHttps = (req) => {
+      const host = String(req.headers.host || '').split(':')[0] || cfg.host;
+      const portPart = cfg.port === 443 ? '' : `:${cfg.port}`;
+      return `https://${host}${portPart}${req.url}`;
+    };
+    redirector = http.createServer((req, res) => {
+      if (req.url.startsWith('/.well-known/acme-challenge/')) {
+        serveAcme(req, res, cfg.acmeRoot);
+        return;
+      }
+      res.writeHead(301, { Location: toHttps(req), 'Content-Length': 0 }).end();
+    });
+    redirector.on('upgrade', (req, socket) => {
+      socket.end(
+        'HTTP/1.1 301 Moved Permanently\r\n' +
+          `Location: ${toHttps(req)}\r\nConnection: close\r\n\r\n`
+      );
+    });
+    redirector.listen(cfg.redirectPort, cfg.host, () => {
+      process.stdout.write(`   跳转:   http://${cfg.host}:${cfg.redirectPort} -> https\n`);
+    });
+  }
+
   const stop = (sig) => {
     console.log(`收到 ${sig}，正在关闭`);
+    if (redirector) redirector.close();
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 3000).unref();
   };
