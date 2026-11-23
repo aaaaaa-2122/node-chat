@@ -375,14 +375,18 @@ class ChatServer {
     const to = data.to;
     const text = typeof data.text === 'string' ? data.text : '';
     const image = data.image === undefined || data.image === null ? null : data.image;
+    const video = data.video === undefined || data.video === null ? null : data.video;
     if (!P.isValidUsername(to)) {
       return this._error(session, ERR.BAD_REQUEST, '收件人用户名非法', id);
     }
-    if (!P.isValidText(text) && !image) {
+    if (!P.isValidText(text) && !image && !video) {
       return this._error(session, ERR.BAD_REQUEST, `消息内容长度需在 1~${LIMITS.MAX_TEXT} 之间`, id);
     }
-    if (image && !P.isValidImageDataUrl(image)) {
+    if (image && !P.isValidImageDataUrl(image) && !P.isValidGifDataUrl(image)) {
       return this._error(session, ERR.BAD_REQUEST, '图片格式非法或超过大小限制', id);
+    }
+    if (video && !P.isValidVideoDataUrl(video)) {
+      return this._error(session, ERR.BAD_REQUEST, '视频格式非法或超过大小限制', id);
     }
     if (to === session.user) {
       return this._error(session, ERR.BAD_REQUEST, '不能给自己发私聊', id);
@@ -396,6 +400,7 @@ class ChatServer {
       ts: P.nowMs(),
     };
     if (image) message.image = image;
+    if (video) message.video = video;
     this.store.appendDm(session.user, to, message);
 
     const target = this.sessions.get(to);
@@ -418,14 +423,18 @@ class ChatServer {
     const room = data.room;
     const text = typeof data.text === 'string' ? data.text : '';
     const image = data.image === undefined || data.image === null ? null : data.image;
+    const video = data.video === undefined || data.video === null ? null : data.video;
     if (!P.isValidRoomName(room)) {
       return this._error(session, ERR.BAD_REQUEST, '群名称非法', id);
     }
-    if (!P.isValidText(text) && !image) {
+    if (!P.isValidText(text) && !image && !video) {
       return this._error(session, ERR.BAD_REQUEST, `消息内容长度需在 1~${LIMITS.MAX_TEXT} 之间`, id);
     }
-    if (image && !P.isValidImageDataUrl(image)) {
+    if (image && !P.isValidImageDataUrl(image) && !P.isValidGifDataUrl(image)) {
       return this._error(session, ERR.BAD_REQUEST, '图片格式非法或超过大小限制', id);
+    }
+    if (video && !P.isValidVideoDataUrl(video)) {
+      return this._error(session, ERR.BAD_REQUEST, '视频格式非法或超过大小限制', id);
     }
     if (!this.store.isMember(room, session.user)) {
       return this._error(session, ERR.NOT_IN_ROOM, `你还不是群「${room}」的成员，请先 join`, id);
@@ -439,6 +448,7 @@ class ChatServer {
       ts: P.nowMs(),
     };
     if (image) message.image = image;
+    if (video) message.video = video;
     this.store.appendRoomMessage(room, message);
 
     // 广播给群内所有在线成员

@@ -233,13 +233,16 @@ class Store {
 }
 
 /**
- * 历史里只保留最近 IMAGE_HISTORY_KEEP 条消息的图片，
- * 更早的消息保留文本但去掉图片，避免存储无限膨胀。
+ * 历史里只保留最近 IMAGE_HISTORY_KEEP 条消息的媒体（图片/视频），
+ * 更早的消息保留文本但去掉媒体，避免存储无限膨胀。
  */
 function stripOldImages(list) {
   const boundary = list.length - LIMITS.IMAGE_HISTORY_KEEP;
   for (let i = 0; i < boundary; i++) {
-    if (list[i] && list[i].image) delete list[i].image;
+    const m = list[i];
+    if (!m) continue;
+    if (m.image) delete m.image;
+    if (m.video) delete m.video;
   }
 }
 

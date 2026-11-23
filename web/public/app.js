@@ -10,7 +10,9 @@
 (function () {
   const $ = (sel) => document.querySelector(sel);
   const MAX_TEXT = 4000;
-  const MAX_IMAGE_CHARS = 580000; // 服务端上限 600000，留点余量
+  const MAX_IMAGE_CHARS = 580000; // 服务端图片上限 600000，留点余量
+  const MAX_MEDIA_CHARS = 1100000; // GIF/动画上限 1200000，留点余量
+  const MAX_VIDEO_CHARS = 1900000; // 短视频上限 2000000，留点余量
 
   const state = {
     ws: null,
@@ -33,6 +35,7 @@
     retryTimer: null,
     manualClose: false,
     attachImage: null,
+    attachVideo: null,
     lastDay: '',
   };
 
@@ -484,10 +487,10 @@
     const dayChanged = day !== state.lastDay;
     const prev = state.lastRow;
     // 同一人 3 分钟内的连续发言合并成一组：省掉重复的头像和名字
-    // 带图的消息不合并——图片气泡和文字气泡贴在一起会糊成一坨
+    // 带图/带视频的消息不合并——媒体气泡和文字气泡贴在一起会糊成一坨
     const grouped =
       !dayChanged && prev && prev.from === m.from && (m.ts || 0) - prev.ts < 180000 &&
-      !m.image && !prev.img;
+      !m.image && !m.video && !prev.img && !prev.video;
 
     if (grouped && prev.timeEl) prev.timeEl.remove();
     state.msgIds.add(m.id);
@@ -544,6 +547,16 @@
       });
       bubble.appendChild(img);
     }
+    if (m.video) {
+      const v = document.createElement('video');
+      v.src = m.video;
+      v.controls = true;
+      v.preload = 'metadata';
+      v.playsInline = true;
+      v.title = '视频消息';
+      v.addEventListener('click', () => showVideoLightbox(m.video));
+      bubble.appendChild(v);
+    }
     main.appendChild(bubble);
 
     const time = document.createElement('div');
@@ -555,7 +568,7 @@
     row.appendChild(main);
     box.appendChild(row);
 
-    state.lastRow = { from: m.from, ts: m.ts || 0, timeEl: time, img: !!m.image };
+    state.lastRow = { from: m.from, ts: m.ts || 0, timeEl: time, img: !!m.image, video: !!m.video };
 
     if (!quiet) scrollBottom();
   }
@@ -586,6 +599,19 @@
     const img = document.createElement('img');
     img.src = src;
     box.appendChild(img);
+    box.addEventListener('click', () => box.remove());
+    document.body.appendChild(box);
+  }
+
+  function showVideoLightbox(src) {
+    const box = document.createElement('div');
+    box.className = 'lightbox lightbox-video';
+    const v = document.createElement('video');
+    v.src = src;
+    v.controls = true;
+    v.autoplay = true;
+    v.playsInline = true;
+    box.appendChild(v);
     box.addEventListener('click', () => box.remove());
     document.body.appendChild(box);
   }
@@ -801,7 +827,8 @@
     const box = $('#input');
     const text = box.value.trim();
     const image = state.attachImage;
-    if (!text && !image) return;
+    const video = state.attachVideo;
+    if (!text && !image && !video) return;
     if (!state.conv) {
       toast('先选一个会话');
       return;
@@ -813,6 +840,7 @@
 
     const payload = { text: text || '' };
     if (image) payload.image = image;
+    if (video) payload.video = video;
 
     box.value = '';
     autoGrow(box);
@@ -839,6 +867,10 @@
         state.attachImage = image;
         showAttach(image);
       }
+      if (video) {
+        state.attachVideo = video;
+        showVideoAttach(video);
+      }
       toast(e.message || '发送失败');
     } finally {
       $('#btnSend').disabled = false;
@@ -851,17 +883,39 @@
     el.style.height = Math.min(el.scrollHeight, 140) + 'px';
   }
 
-  // ================================================================ 图片
+  // ================================================================ 图片 / GIF / 视频
   function showAttach(dataUrl) {
     $('#attachImg').src = dataUrl;
+    $('#attachImg').hidden = false;
+    $('#attachVideo').hidden = true;
+    $('#attach').hidden = false;
+  }
+
+  function showVideoAttach(dataUrl) {
+    $('#attachVideo').src = dataUrl;
+    $('#attachVideo').hidden = false;
+    $('#attachImg').hidden = true;
     $('#attach').hidden = false;
   }
 
   function clearAttach() {
     state.attachImage = null;
+    state.attachVideo = null;
     $('#attach').hidden = true;
     $('#attachImg').removeAttribute('src');
+    $('#attachVideo').removeAttribute('src');
     $('#fileImage').value = '';
+    $('#fileVideo').value = '';
+  }
+
+  /** 读取本地文件为 data URL（保持原始编码，适合 GIF/视频这类不能重编码的） */
+  function fileToDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const fr = new FileReader();
+      fr.onload = () => resolve(String(fr.result));
+      fr.onerror = () => reject(new Error('文件读不出来'));
+      fr.readAsDataURL(file);
+    });
   }
 
   /** 按最长边缩放并用 JPEG 压缩，直到体积小于上限 */
@@ -910,9 +964,35 @@
   async function pickImage(file) {
     if (!file) return;
     try {
-      const dataUrl = await compress(file, 1280, 0.82);
+      let dataUrl;
+      if (file.type === 'image/gif') {
+        // GIF 走原样内联，保持动画（重编码会变成静态 JPEG）
+        dataUrl = await fileToDataUrl(file);
+        if (dataUrl.length > MAX_MEDIA_CHARS) {
+          toast('这张动图太大（上限约 1.1MB），换一个小点的吧');
+          return;
+        }
+      } else {
+        dataUrl = await compress(file, 1280, 0.82);
+      }
       state.attachImage = dataUrl;
       showAttach(dataUrl);
+      $('#input').focus();
+    } catch (e) {
+      toast(e.message);
+    }
+  }
+
+  async function pickVideo(file) {
+    if (!file) return;
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      if (dataUrl.length > MAX_VIDEO_CHARS) {
+        toast('视频太大（上限约 1.9MB），换个短一点的，或转成 GIF');
+        return;
+      }
+      state.attachVideo = dataUrl;
+      showVideoAttach(dataUrl);
       $('#input').focus();
     } catch (e) {
       toast(e.message);
@@ -992,6 +1072,8 @@
 
   $('#btnImage').addEventListener('click', () => $('#fileImage').click());
   $('#fileImage').addEventListener('change', (ev) => pickImage(ev.target.files[0]));
+  $('#btnVideo').addEventListener('click', () => $('#fileVideo').click());
+  $('#fileVideo').addEventListener('change', (ev) => pickVideo(ev.target.files[0]));
   $('#btnAttachClear').addEventListener('click', clearAttach);
 
   $('#meAvatar').addEventListener('click', () => $('#fileAvatar').click());
@@ -1006,6 +1088,7 @@
     ev.preventDefault();
     const f = ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0];
     if (f && f.type.startsWith('image/')) pickImage(f);
+    else if (f && f.type.startsWith('video/')) pickVideo(f);
   });
 
   $('#btnNewRoom').addEventListener('click', async () => {
