@@ -35,7 +35,7 @@ function parseArgs(argv) {
     upstreamHost: '127.0.0.1',
     upstreamPort: 9099,
     root: path.join(__dirname, '..', 'public'),
-    maxFrame: 2 * 1024 * 1024,
+    maxFrame: 4 * 1024 * 1024,
     tlsCert: '',
     tlsKey: '',
     // 有证书时再开一个明文端口：ACME 验证 + 域名请求 301 到 https

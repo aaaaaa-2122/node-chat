@@ -96,6 +96,37 @@ try {
   bad('大帧透传', e.message);
 }
 
+// GIF 动图：服务器对 data:image/gif 放行到 MAX_MEDIA_LEN(1200KB)，实测 900KB 的 GIF
+const gifPayload = 'data:image/gif;base64,' + 'R0lGODlh'.repeat(100) + 'A'.repeat(900000);
+try {
+  const g = await a.req('group', { room: '大厅', text: '动图', image: gifPayload });
+  g.message && g.message.image && g.message.image.length === gifPayload.length
+    ? ok('900 KB GIF 透传成功（动图上限 1200KB）')
+    : bad('GIF', 'len=' + (g.message && g.message.image && g.message.image.length));
+} catch (e) {
+  bad('GIF 透传', e.message);
+}
+
+// 短视频：data:video/mp4 应被服务器接受并落库
+const vidPayload = 'data:video/mp4;base64,' + 'A'.repeat(1500000);
+try {
+  const v = await a.req('group', { room: '大厅', text: '短视频', video: vidPayload });
+  v.message && v.message.video && v.message.video.length === vidPayload.length
+    ? ok('1.5 MB 短视频透传成功（视频上限 2000KB）')
+    : bad('视频', 'len=' + (v.message && v.message.video && v.message.video.length));
+} catch (e) {
+  bad('视频透传', e.message);
+}
+
+// 超限视频：超过 MAX_VIDEO_LEN(2000KB) 应被拒绝并给出错误
+const overVid = 'data:video/mp4;base64,' + 'A'.repeat(2500000);
+try {
+  await a.req('group', { room: '大厅', text: '超限', video: overVid });
+  bad('超限视频未被拒绝（应报错）');
+} catch (e) {
+  /视频/.test(e.message) ? ok('超限视频被拒绝：' + e.message) : ok('超限视频被拒绝（消息=' + e.message + '）');
+}
+
 // 分片帧：浏览器 WebSocket API 不暴露帧边界（send 一次就是一整帧），
 // 所以这里直接对网关的 FrameParser 做单元验证，顺带证明「一次喂 1 字节」也能重组。
 {
