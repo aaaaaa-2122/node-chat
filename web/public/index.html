@@ -23,15 +23,30 @@
     <form id="loginForm" autocomplete="on">
       <label>
         <span>用户名</span>
-        <input id="inputUser" name="username" maxlength="24" required placeholder="首次登录自动注册" autocapitalize="off" autocorrect="off" spellcheck="false" />
+        <input id="inputUser" name="username" maxlength="24" required placeholder="用户名 1–24 位" autocapitalize="off" autocorrect="off" spellcheck="false" />
       </label>
       <label>
         <span>密码</span>
         <input id="inputPass" name="password" type="password" required placeholder="自己设一个" />
       </label>
-      <button id="btnLogin" type="submit">进入聊天室</button>
+      <label>
+        <span>邮箱</span>
+        <input id="inputEmail" name="email" type="email" maxlength="254" placeholder="注册 / 找回账号用，登录可留空" autocapitalize="off" autocorrect="off" spellcheck="false" />
+      </label>
+      <div class="login-actions">
+        <button id="btnLogin" type="submit">登录</button>
+        <button id="btnRegister" type="button">注册</button>
+      </div>
+      <div id="verifySection" class="login-verify" hidden>
+        <p class="login-hint" id="verifyHint">验证码已发到你的邮箱，请查收后输入</p>
+        <input id="inputVerify" name="verify" maxlength="6" inputmode="numeric" placeholder="6 位验证码" />
+        <div class="login-actions">
+          <button id="btnVerify" type="button">确认验证</button>
+          <button id="btnResend" type="button">重发</button>
+        </div>
+      </div>
       <p class="login-err" id="loginErr" role="alert"></p>
-      <p class="login-hint">用户名 1–24 位，中文 / 字母 / 数字 / <code>_</code> <code>.</code> <code>-</code></p>
+      <p class="login-hint">首次使用点「注册」，会往邮箱发 6 位验证码；已注册用户点「登录」。</p>
     </form>
   </div>
 </div>

@@ -9,6 +9,7 @@ const { StringDecoder } = require('string_decoder');
 const P = require('./protocol');
 const { Store } = require('./store');
 const S = require('./secure');
+const Mailer = require('./mailer');
 
 const { C2S, S2C, ERR, LIMITS } = P;
 
@@ -61,6 +62,11 @@ class ChatServer {
     this.demo = options.demo || false;
     /** 只接受加密连接（默认 false：明文照常可用，兼容旧客户端） */
     this.requireSecure = options.requireSecure === undefined ? false : !!options.requireSecure;
+    /** 邮箱验证登录：注册需邮箱验证码（默认 true，本分支新版本不向下兼容） */
+    this.requireEmailVerify = options.requireEmailVerify === undefined ? true : !!options.requireEmailVerify;
+    /** SMTP 发信模块（零依赖，对象含 sendVerifyCode 等方法） */
+    this.mailer = Mailer;
+    this.smtp = options.smtp || {};
     this.store = new Store(this.dataDir);
     /** 服务端长期身份（Ed25519），启动时加载或生成 */
     this.identity = null;
@@ -126,7 +132,13 @@ class ChatServer {
 
   _seedDemoUsers() {
     for (const name of ['alice', 'bob', 'carol']) {
-      if (!this.store.hasUser(name)) this.store.createUser(name, '123456');
+      if (!this.store.hasUser(name)) {
+        this.store.createUser(name, '123456', `${name}@demo.local`);
+        // 演示账号直接视为已验证（方便本地体验 / 老测试）
+        const u = this.store.users.get(name);
+        u.verified = true;
+        this.store._touch(this.store.usersFile);
+      }
     }
     this.store.ensureRoom('general', '系统');
     this.store.ensureRoom('dev', '系统');
@@ -235,6 +247,9 @@ class ChatServer {
 
     if (msg.type === C2S.SECURE) return this._handleSecure(session, data, msg.id);
     if (msg.type === C2S.AUTH) return this._handleAuth(session, data, msg.id);
+    if (msg.type === C2S.REGISTER) return this._handleRegister(session, data, msg.id);
+    if (msg.type === C2S.VERIFY_EMAIL) return this._handleVerifyEmail(session, data, msg.id);
+    if (msg.type === C2S.RESEND_CODE) return this._handleResendCode(session, data, msg.id);
     if (msg.type === C2S.PING) return this._send(session, P.frame(S2C.PONG, { at: Date.now() }));
 
     if (!session.authenticated) {
@@ -321,16 +336,23 @@ class ChatServer {
     if (!P.isValidUsername(username) || typeof password !== 'string' || !password) {
       return this._authFail(session, '用户名或密码格式不正确', id);
     }
+    if (!this.store.hasUser(username)) {
+      // 邮箱验证模式下没有自动注册：账号需先走 register + 邮箱验证
+      return this._authFail(session, '用户不存在，请先注册', id);
+    }
     // 先校验密码，再判断是否重复登录，避免用错误密码探测在线状态
-    if (this.store.hasUser(username) && !this.store.verifyUser(username, password)) {
+    if (!this.store.verifyUser(username, password)) {
       return this._authFail(session, '密码错误', id);
+    }
+    if (this.requireEmailVerify && this.store.isPending(username)) {
+      return this._send(
+        session,
+        P.frame(S2C.AUTH_ERR, { code: 'not_verified', message: '账号尚未通过邮箱验证' }, id)
+      );
+      // 不关闭连接：客户端可继续发起 verify_email
     }
     if (this.sessions.has(username)) {
       return this._authFail(session, `用户 ${username} 已在别处登录`, id);
-    }
-    if (!this.store.hasUser(username)) {
-      // 首次登录自动注册，方便快速体验
-      this.store.createUser(username, password);
     }
 
     session.user = username;
@@ -359,6 +381,123 @@ class ChatServer {
   _authFail(session, message, id) {
     this._send(session, P.frame(S2C.AUTH_ERR, { message }, id));
     session.socket.end();
+  }
+
+  /** 生成 6 位验证码 */
+  _genCode() {
+    return String(Math.floor(100000 + Math.random() * 900000));
+  }
+
+  /** 通过 SMTP（或日志降级）发送验证码邮件 */
+  async _sendVerifyCodeMail(username, email, code) {
+    try {
+      return await this.mailer.sendVerifyCode(
+        { email, username, code },
+        { ttlMs: LIMITS.VERIFY_CODE_TTL_MS, ...this.smtp }
+      );
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  }
+
+  /** 注册：校验格式 -> 唯一性 -> 发码 -> 建待验证用户 */
+  async _handleRegister(session, data, id) {
+    const username = data.username;
+    const password = data.password;
+    const email = data.email;
+
+    if (!P.isValidUsername(username) || typeof password !== 'string' || !password) {
+      return this._send(session, P.frame(S2C.REGISTER_ERR, { code: 'bad_format', message: '用户名或密码格式不正确' }, id));
+    }
+    if (!P.isValidEmail(email)) {
+      return this._send(session, P.frame(S2C.REGISTER_ERR, { code: 'bad_email', message: '邮箱格式不正确' }, id));
+    }
+    if (this.store.hasUser(username)) {
+      return this._send(session, P.frame(S2C.REGISTER_ERR, { code: 'user_exists', message: '用户名已被占用' }, id));
+    }
+    if (this.store.emailExists(email)) {
+      return this._send(session, P.frame(S2C.REGISTER_ERR, { code: 'email_exists', message: '邮箱已被注册' }, id));
+    }
+    if (!session.allowRequest()) {
+      return this._send(session, P.frame(S2C.REGISTER_ERR, { code: 'rate_limited', message: '发送过于频繁' }, id));
+    }
+
+    const code = this._genCode();
+    const sent = await this._sendVerifyCodeMail(username, email, code);
+    if (!sent.ok) {
+      return this._send(session, P.frame(S2C.REGISTER_ERR, { code: 'mail_failed', message: '验证码发送失败，请稍后重试' }, id));
+    }
+    // 建待验证用户 + 存验证码
+    this.store.createUser(username, password, email);
+    this.store.setVerifyCode(username, code, LIMITS.VERIFY_CODE_TTL_MS);
+    if (sent.devMode && sent.code) {
+      process.stdout.write(`[mailer] 验证码 for ${username} (${email}): ${sent.code}\n`);
+    }
+    this._send(
+      session,
+      P.frame(S2C.REGISTER_OK, { user: username, needVerify: true, devMode: !!sent.devMode }, id)
+    );
+  }
+
+  /** 提交邮箱验证码 */
+  _handleVerifyEmail(session, data, id) {
+    const username = data.username;
+    const code = data.code;
+
+    if (!P.isValidUsername(username) || !P.isValidVerifyCode(code)) {
+      return this._send(session, P.frame(S2C.VERIFY_ERR, { code: 'bad_format', message: '用户名或验证码格式不正确' }, id));
+    }
+    if (!this.store.hasUser(username)) {
+      return this._send(session, P.frame(S2C.VERIFY_ERR, { code: 'no_user', message: '用户不存在' }, id));
+    }
+    const result = this.store.verifyEmail(username, code);
+    if (!result.ok) {
+      const reasonMsg = {
+        no_code: '请先注册获取验证码',
+        expired: '验证码已过期，请重新获取',
+        too_many_attempts: '尝试次数过多，请重新获取验证码',
+        wrong_code: `验证码错误，剩余 ${this.store.verifyAttemptsLeft(username)} 次`,
+        already_verified: '账号已验证',
+      }[result.reason] || '验证失败';
+      return this._send(session, P.frame(S2C.VERIFY_ERR, { code: result.reason, message: reasonMsg }, id));
+    }
+    // 验证通过，直接返回 AUTH_OK 让客户端进聊天
+    session.user = username;
+    this.sessions.set(username, session);
+    this._send(
+      session,
+      P.frame(S2C.AUTH_OK, {
+        user: username,
+        rooms: this.store.listRooms(),
+        server: this.serverName,
+        avatar: this.store.getAvatar(username),
+      }, id)
+    );
+    this._broadcastPresence(username, true);
+    this._sendToAll(P.frame(S2C.SYSTEM, { event: 'user_joined', user: username, at: Date.now() }), username);
+    setImmediate(() => this._flushInbox(session));
+  }
+
+  /** 重发验证码 */
+  async _handleResendCode(session, data, id) {
+    const username = data.username;
+    if (!P.isValidUsername(username)) {
+      return this._send(session, P.frame(S2C.VERIFY_ERR, { code: 'bad_format', message: '用户名格式不正确' }, id));
+    }
+    const user = this.store.users.get(username);
+    if (!user || !user.email) {
+      return this._send(session, P.frame(S2C.VERIFY_ERR, { code: 'no_user', message: '用户不存在或没有邮箱' }, id));
+    }
+    const code = this._genCode();
+    const sent = await this._sendVerifyCodeMail(username, user.email, code);
+    if (!sent.ok) {
+      return this._send(session, P.frame(S2C.VERIFY_ERR, { code: 'mail_failed', message: '重发失败，请稍后重试' }, id));
+    }
+    this.store.setVerifyCode(username, code, LIMITS.VERIFY_CODE_TTL_MS);
+    if (sent.devMode && sent.code) {
+      process.stdout.write(`[mailer] 重发验证码 for ${username} (${user.email}): ${sent.code}\n`);
+    }
+    this._send(session, P.frame(S2C.VERIFY_OK, { resent: true }, id));
   }
 
   _flushInbox(session) {
@@ -635,6 +774,15 @@ if (require.main === module) {
     serverName: args.name,
     demo: args.demo,
     requireSecure: args.requireSecure,
+    requireEmailVerify: args.requireEmailVerify,
+    smtp: {
+      host: args.smtpHost,
+      port: args.smtpPort,
+      secure: args.smtpSecure,
+      user: args.smtpUser,
+      pass: args.smtpPass,
+      from: args.smtpFrom,
+    },
   });
 
   server
@@ -684,7 +832,7 @@ function localAddresses() {
 
 /** 简单的命令行参数解析 */
 function parseArgs(argv) {
-  const out = { host: '0.0.0.0', port: 9099, data: path.join(__dirname, '..', 'data'), demo: false, noStdin: false };
+  const out = { host: '0.0.0.0', port: 9099, data: path.join(__dirname, '..', 'data'), demo: false, noStdin: false, requireEmailVerify: true };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--host') out.host = argv[++i];
@@ -694,6 +842,13 @@ function parseArgs(argv) {
     else if (a === '--demo') out.demo = true;
     else if (a === '--no-stdin') out.noStdin = true;
     else if (a === '--require-secure') out.requireSecure = true;
+    else if (a === '--no-email-verify') out.requireEmailVerify = false;
+    else if (a === '--smtp-host') out.smtpHost = argv[++i];
+    else if (a === '--smtp-port') out.smtpPort = Number(argv[++i]);
+    else if (a === '--smtp-secure') out.smtpSecure = argv[++i];
+    else if (a === '--smtp-user') out.smtpUser = argv[++i];
+    else if (a === '--smtp-pass') out.smtpPass = argv[++i];
+    else if (a === '--smtp-from') out.smtpFrom = argv[++i];
     else if (a === '--help' || a === '-h') {
       console.log(`用法: node src/server.js [选项]
 
@@ -705,6 +860,13 @@ function parseArgs(argv) {
   --demo            创建演示账号 alice/bob/carol（密码 123456）与 general/dev 群
   --no-stdin        不监听标准输入广播
   --require-secure  只接受加密连接（默认 false：明文客户端照常可用）
+  --no-email-verify 关闭邮箱验证登录（默认开启：注册需邮箱验证码）
+  --smtp-host <h>   SMTP 服务器地址（发验证码邮件；缺省则验证码打到日志降级）
+  --smtp-port <p>   SMTP 端口（默认 465）
+  --smtp-secure <m> SMTP 加密：tls | starttls | none（默认按端口）
+  --smtp-user <u>   SMTP 用户名（可选）
+  --smtp-pass <p>   SMTP 密码（可选）
+  --smtp-from <e>   SMTP 发件人地址（可选）
   -h, --help        显示帮助`);
       process.exit(0);
     }

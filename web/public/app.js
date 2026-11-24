@@ -245,7 +245,13 @@
     if (msg.id && state.pending.has(msg.id)) {
       const p = state.pending.get(msg.id);
       state.pending.delete(msg.id);
-      if (type === 'error' || type === 'auth_err' || type === 'secure_err') {
+      if (
+        type === 'error' ||
+        type === 'auth_err' ||
+        type === 'secure_err' ||
+        type === 'register_err' ||
+        type === 'verify_err'
+      ) {
         p.reject(Object.assign(new Error(data.message || '请求失败'), { code: data.code }));
       } else {
         p.resolve(data);
@@ -352,32 +358,7 @@
   async function login(username, password, isRetry) {
     try {
       const data = await request('auth', { username, password }, 12000);
-      state.user = data.user;
-      state.avatar = data.avatar || null;
-      state.serverName = data.server || 'Node Chat';
-      state.rooms = data.rooms || [];
-      state.authed = true;
-      state.retry = 0;
-      state.creds = { u: username, p: password };
-      try {
-        localStorage.setItem('nc.web.user', username);
-      } catch (_) {}
-
-      $('#login').hidden = true;
-      $('#app').hidden = false;
-      $('#meName').textContent = state.user;
-      $('#serverName').textContent = state.serverName;
-      paintAvatar($('#meAvatar'), state.user);
-      setConn('online', '已连接');
-
-      renderSidebar();
-      refreshWho();
-
-      // 回到上次的会话
-      const last = loadLastConv();
-      if (last && (last.kind === 'room' || last.kind === 'dm')) {
-        openConv(last.kind, last.id, true).catch(() => {});
-      }
+      await enterChat(data);
       return data;
     } catch (e) {
       if (isRetry) {
@@ -387,6 +368,62 @@
       } else {
         throw e;
       }
+    }
+  }
+
+  /** 注册：发邮箱验证码，进入验证码输入态 */
+  async function registerAccount(username, password, email) {
+    await request('register', { username, password, email }, 12000);
+    // 注册受理，进入验证码区
+    $('#verifyHint').textContent = `验证码已发到 ${email}，请查收后输入（10 分钟内有效）`;
+    $('#verifySection').hidden = false;
+    $('#inputVerify').value = '';
+    $('#inputVerify').focus();
+    state.pendingVerifyUser = username;
+    toast('验证码已发送，请查收邮箱');
+  }
+
+  /** 提交邮箱验证码，通过后直接进入聊天 */
+  async function verifyAccount(username, code) {
+    const data = await request('verify_email', { username, code }, 12000);
+    await enterChat(data);
+    $('#verifySection').hidden = true;
+  }
+
+  /** 重发验证码 */
+  async function resendCode() {
+    const u = state.pendingVerifyUser || $('#inputUser').value.trim();
+    if (!u) return;
+    await request('resend_code', { username: u }, 12000);
+    toast('验证码已重发，请查收');
+  }
+
+  /** 登录成功后进入聊天界面（供 auth 与 verify_email 复用） */
+  async function enterChat(data) {
+    state.user = data.user;
+    state.avatar = data.avatar || null;
+    state.serverName = data.server || 'Node Chat';
+    state.rooms = data.rooms || [];
+    state.authed = true;
+    state.retry = 0;
+    state.creds = { u: state.user, p: $('#inputPass').value };
+    try {
+      localStorage.setItem('nc.web.user', state.user);
+    } catch (_) {}
+
+    $('#login').hidden = true;
+    $('#app').hidden = false;
+    $('#meName').textContent = state.user;
+    $('#serverName').textContent = state.serverName;
+    paintAvatar($('#meAvatar'), state.user);
+    setConn('online', '已连接');
+
+    renderSidebar();
+    refreshWho();
+
+    const last = loadLastConv();
+    if (last && (last.kind === 'room' || last.kind === 'dm')) {
+      openConv(last.kind, last.id, true).catch(() => {});
     }
   }
 
@@ -1055,23 +1092,105 @@
       err.textContent = '用户名和密码都要填';
       return;
     }
-    $('#btnLogin').disabled = true;
-    $('#btnLogin').textContent = '连接中…';
+    setBtnBusy('#btnLogin', true, '登录中…');
     try {
       await connect();
       await login(u, p, false);
     } catch (e) {
-      err.textContent = e.message || '登录失败';
+      if (e.code === 'not_verified') {
+        // 账号已注册但还没通过邮箱验证，自动切到验证码态
+        $('#verifyHint').textContent = `${u} 待邮箱验证，请先获取验证码`;
+        $('#verifySection').hidden = false;
+        $('#inputVerify').focus();
+        err.textContent = '该账号尚未验证，请在下方输入邮箱验证码';
+      } else {
+        err.textContent = e.message || '登录失败';
+        state.manualClose = true;
+        try {
+          state.ws && state.ws.close();
+        } catch (_) {}
+        state.manualClose = false;
+      }
+    } finally {
+      setBtnBusy('#btnLogin', false, '登录');
+    }
+  });
+
+  // 注册
+  $('#btnRegister').addEventListener('click', async () => {
+    const u = $('#inputUser').value.trim();
+    const p = $('#inputPass').value;
+    const e = $('#inputEmail').value.trim();
+    const err = $('#loginErr');
+    err.textContent = '';
+    if (!u || !p || !e) {
+      err.textContent = '注册需要填用户名、密码、邮箱';
+      return;
+    }
+    setBtnBusy('#btnRegister', true, '发送中…');
+    try {
+      await connect();
+      await registerAccount(u, p, e);
+    } catch (ee) {
+      err.textContent = ee.message || '注册失败';
       state.manualClose = true;
       try {
         state.ws && state.ws.close();
       } catch (_) {}
       state.manualClose = false;
     } finally {
-      $('#btnLogin').disabled = false;
-      $('#btnLogin').textContent = '进入聊天室';
+      setBtnBusy('#btnRegister', false, '注册');
     }
   });
+
+  // 确认验证
+  $('#btnVerify').addEventListener('click', async () => {
+    const u = $('#inputUser').value.trim() || state.pendingVerifyUser;
+    const code = $('#inputVerify').value.trim();
+    const err = $('#loginErr');
+    err.textContent = '';
+    if (!u || !code) {
+      err.textContent = '请输入验证码';
+      return;
+    }
+    setBtnBusy('#btnVerify', true, '验证中…');
+    try {
+      await connect();
+      await verifyAccount(u, code);
+    } catch (ee) {
+      err.textContent = ee.message || '验证失败';
+    } finally {
+      setBtnBusy('#btnVerify', false, '确认验证');
+    }
+  });
+
+  // 重发验证码
+  $('#btnResend').addEventListener('click', async () => {
+    const err = $('#loginErr');
+    err.textContent = '';
+    setBtnBusy('#btnResend', true, '重发中…');
+    try {
+      await connect();
+      await resendCode();
+    } catch (ee) {
+      err.textContent = ee.message || '重发失败';
+    } finally {
+      setBtnBusy('#btnResend', false, '重发');
+    }
+  });
+
+  /** 通用按钮忙碌态 */
+  function setBtnBusy(sel, busy, text) {
+    const b = $(sel);
+    if (busy) {
+      b.dataset.origText = text || b.textContent;
+      b.disabled = true;
+      b.textContent = text || '处理中…';
+    } else {
+      b.disabled = false;
+      b.textContent = b.dataset.origText || b.textContent;
+    }
+  }
 
   $('#btnSend').addEventListener('click', sendMessage);
 

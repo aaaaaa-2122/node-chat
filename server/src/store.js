@@ -29,6 +29,19 @@ class Store {
     this.users = new Map(Object.entries(this._readJson(this.usersFile, {})));
     this.rooms = new Map(Object.entries(this._readJson(this.roomsFile, {})));
     this.dms = new Map(Object.entries(this._readJson(this.dmFile, {})));
+    // 迁移旧用户：老 users.json 没有 email/verified 字段，视为已验证（保留可登录）
+    let migrated = false;
+    for (const [name, user] of this.users) {
+      if (user.verified === undefined) {
+        user.verified = true;
+        migrated = true;
+      }
+      if (user.email === undefined) {
+        user.email = null;
+        migrated = true;
+      }
+    }
+    if (migrated) this._touch(this.usersFile);
     return this;
   }
 
@@ -83,13 +96,100 @@ class Store {
   }
 
   /** 注册新用户，密码使用 scrypt 加盐哈希保存 */
-  createUser(username, password) {
+  /**
+   * 创建用户。邮箱验证模式下建的是「待验证」用户（verified:false），
+   * 验证通过后由 activateUser 置为 true。老代码兼容时 verified 可缺省。
+   */
+  createUser(username, password, email) {
     const salt = crypto.randomBytes(16).toString('hex');
     const hash = crypto.scryptSync(String(password), salt, 32).toString('hex');
-    const user = { username, salt, hash, createdAt: nowMs(), avatar: null };
+    const user = {
+      username,
+      salt,
+      hash,
+      email: email || null,
+      verified: false, // 待邮箱验证
+      createdAt: nowMs(),
+      avatar: null,
+      verifyCodeHash: null,
+      verifyExpiresAt: 0,
+      verifyAttempts: 0,
+    };
     this.users.set(username, user);
     this._touch(this.usersFile);
     return user;
+  }
+
+  /** 该邮箱是否已被使用（已激活用户） */
+  emailExists(email) {
+    if (!email) return false;
+    for (const u of this.users.values()) {
+      if (u.email === email) return true;
+    }
+    return false;
+  }
+
+  /** 按邮箱找用户（返回 username，无则 null） */
+  findByEmail(email) {
+    if (!email) return null;
+    for (const [name, u] of this.users) {
+      if (u.email === email) return name;
+    }
+    return null;
+  }
+
+  /** 是否待验证用户（注册了但还没通过邮箱验证） */
+  isPending(username) {
+    const u = this.users.get(username);
+    return !!u && u.verified === false;
+  }
+
+  /** 设置验证码（存 scrypt 哈希，避免明文落盘）+ 过期时间 + 重置尝试次数 */
+  setVerifyCode(username, code, ttlMs = LIMITS.VERIFY_CODE_TTL_MS) {
+    const user = this.users.get(username);
+    if (!user) return null;
+    const salt = crypto.randomBytes(16).toString('hex');
+    const hash = crypto.scryptSync(String(code), salt, 32).toString('hex');
+    user.verifyCodeSalt = salt;
+    user.verifyCodeHash = hash;
+    user.verifyExpiresAt = nowMs() + ttlMs;
+    user.verifyAttempts = 0;
+    this._touch(this.usersFile);
+    return user;
+  }
+
+  /** 校验验证码：比对 scrypt、检查过期与次数上限。返回 {ok, reason} */
+  verifyEmail(username, code) {
+    const user = this.users.get(username);
+    if (!user) return { ok: false, reason: 'no_user' };
+    if (user.verified) return { ok: false, reason: 'already_verified' };
+    if (!user.verifyCodeHash) return { ok: false, reason: 'no_code' };
+    if (nowMs() > user.verifyExpiresAt) return { ok: false, reason: 'expired' };
+    if (user.verifyAttempts >= LIMITS.VERIFY_MAX_ATTEMPTS) {
+      return { ok: false, reason: 'too_many_attempts' };
+    }
+    const candidate = crypto.scryptSync(String(code), user.verifyCodeSalt, 32);
+    const expected = Buffer.from(user.verifyCodeHash, 'hex');
+    let ok = false;
+    if (candidate.length === expected.length) {
+      ok = crypto.timingSafeEqual(candidate, expected);
+    }
+    user.verifyAttempts += 1;
+    if (ok) {
+      user.verified = true;
+      user.verifyCodeHash = null;
+      user.verifyCodeSalt = null;
+      user.verifyExpiresAt = 0;
+    }
+    this._touch(this.usersFile);
+    return ok ? { ok: true } : { ok: false, reason: 'wrong_code' };
+  }
+
+  /** 校验失败次数（供客户端提示剩余机会） */
+  verifyAttemptsLeft(username) {
+    const user = this.users.get(username);
+    if (!user || !user.verifyCodeHash) return 0;
+    return Math.max(0, LIMITS.VERIFY_MAX_ATTEMPTS - (user.verifyAttempts || 0));
   }
 
   verifyUser(username, password) {
