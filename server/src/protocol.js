@@ -229,6 +229,16 @@ function isValidVideoUrl(value) {
   );
 }
 
+/** 图片引用（同样走 /files/ HTTP 上传，与视频一致） */
+function isValidImageUrl(value) {
+  return (
+    typeof value === 'string' &&
+    value.startsWith('/files/') &&
+    value.length <= LIMITS.MAX_VIDEO_URL_LEN &&
+    /^\/files\/[A-Za-z0-9._-]{1,80}$/.test(value)
+  );
+}
+
 /** 头像同样用 data URL 承载，但体积上限更小 */
 function isValidAvatarDataUrl(value) {
   return (
@@ -266,6 +276,7 @@ module.exports = {
   isValidVideoDataUrl,
   isValidGifDataUrl,
   isValidVideoUrl,
+  isValidImageUrl,
   dmKey,
   nowMs,
 };

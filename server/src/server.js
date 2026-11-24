@@ -60,8 +60,8 @@ class ChatServer {
     this.dataDir = options.dataDir || path.join(__dirname, '..', 'data');
     this.serverName = options.serverName || 'node-chat-server';
     this.demo = options.demo || false;
-    /** 只接受加密连接（默认 false：明文照常可用，兼容旧客户端） */
-    this.requireSecure = options.requireSecure === undefined ? false : !!options.requireSecure;
+    /** 只接受加密连接（默认 true：强制加密，无明文，不向下兼容） */
+    this.requireSecure = options.requireSecure === undefined ? true : !!options.requireSecure;
     /** 邮箱验证登录：注册需邮箱验证码（默认 true，本分支新版本不向下兼容） */
     this.requireEmailVerify = options.requireEmailVerify === undefined ? true : !!options.requireEmailVerify;
     /** SMTP 发信模块（零依赖，对象含 sendVerifyCode 等方法） */
@@ -149,18 +149,6 @@ class ChatServer {
     socket.setNoDelay(true);
     this._sockets.add(socket);
     const session = new Session(socket, ++this._sessionSeq);
-    // 要求加密时不发欢迎帧——否则等于告诉明文客户端「你可以继续」
-    if (!this.requireSecure) {
-      this._send(
-        session,
-        P.frame(S2C.SYSTEM, {
-          event: 'welcome',
-          server: this.serverName,
-          version: P.VERSION,
-          secure: { supported: true, required: false, fp: this.identity.fp },
-        })
-      );
-    }
 
     socket.on('data', (chunk) => {
       session.lastActive = Date.now();
@@ -516,14 +504,18 @@ class ChatServer {
     const image = data.image === undefined || data.image === null ? null : data.image;
     const video = data.video === undefined || data.video === null ? null : data.video;
     const videoUrl = data.videoUrl === undefined || data.videoUrl === null ? null : data.videoUrl;
+    const imageUrl = data.imageUrl === undefined || data.imageUrl === null ? null : data.imageUrl;
     if (!P.isValidUsername(to)) {
       return this._error(session, ERR.BAD_REQUEST, '收件人用户名非法', id);
     }
-    if (!P.isValidText(text) && !image && !video && !videoUrl) {
+    if (!P.isValidText(text) && !image && !imageUrl && !video && !videoUrl) {
       return this._error(session, ERR.BAD_REQUEST, `消息内容长度需在 1~${LIMITS.MAX_TEXT} 之间`, id);
     }
     if (image && !P.isValidImageDataUrl(image) && !P.isValidGifDataUrl(image)) {
       return this._error(session, ERR.BAD_REQUEST, '图片格式非法或超过大小限制', id);
+    }
+    if (imageUrl && !P.isValidImageUrl(imageUrl)) {
+      return this._error(session, ERR.BAD_REQUEST, '图片地址非法或超过大小限制', id);
     }
     if (video && !P.isValidVideoDataUrl(video)) {
       return this._error(session, ERR.BAD_REQUEST, '视频格式非法或超过大小限制', id);
@@ -543,6 +535,7 @@ class ChatServer {
       ts: P.nowMs(),
     };
     if (image) message.image = image;
+    if (imageUrl) message.imageUrl = imageUrl;
     if (video) message.video = video;
     if (videoUrl) message.videoUrl = videoUrl;
     this.store.appendDm(session.user, to, message);
@@ -569,14 +562,18 @@ class ChatServer {
     const image = data.image === undefined || data.image === null ? null : data.image;
     const video = data.video === undefined || data.video === null ? null : data.video;
     const videoUrl = data.videoUrl === undefined || data.videoUrl === null ? null : data.videoUrl;
+    const imageUrl = data.imageUrl === undefined || data.imageUrl === null ? null : data.imageUrl;
     if (!P.isValidRoomName(room)) {
       return this._error(session, ERR.BAD_REQUEST, '群名称非法', id);
     }
-    if (!P.isValidText(text) && !image && !video && !videoUrl) {
+    if (!P.isValidText(text) && !image && !imageUrl && !video && !videoUrl) {
       return this._error(session, ERR.BAD_REQUEST, `消息内容长度需在 1~${LIMITS.MAX_TEXT} 之间`, id);
     }
     if (image && !P.isValidImageDataUrl(image) && !P.isValidGifDataUrl(image)) {
       return this._error(session, ERR.BAD_REQUEST, '图片格式非法或超过大小限制', id);
+    }
+    if (imageUrl && !P.isValidImageUrl(imageUrl)) {
+      return this._error(session, ERR.BAD_REQUEST, '图片地址非法或超过大小限制', id);
     }
     if (video && !P.isValidVideoDataUrl(video)) {
       return this._error(session, ERR.BAD_REQUEST, '视频格式非法或超过大小限制', id);
@@ -596,6 +593,7 @@ class ChatServer {
       ts: P.nowMs(),
     };
     if (image) message.image = image;
+    if (imageUrl) message.imageUrl = imageUrl;
     if (video) message.video = video;
     if (videoUrl) message.videoUrl = videoUrl;
     this.store.appendRoomMessage(room, message);

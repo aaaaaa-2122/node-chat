@@ -86,6 +86,9 @@ const MIME = {
   '.json': 'application/json; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
   '.ico': 'image/x-icon',
   '.woff2': 'font/woff2',
   '.gif': 'image/gif',
@@ -107,7 +110,7 @@ const UPLOAD_STALE_MS = 24 * 60 * 60 * 1000; // 24h
 /** 已完成视频文件的保留时长：超过 N 天自动清理 */
 const FILE_KEEP_MS = 7 * 24 * 60 * 60 * 1000; // 7 天
 /** 只接受这些扩展名作为上传文件 */
-const UPLOAD_ALLOWED_EXT = new Set(['.mp4', '.webm', '.mov', '.ogg', '.m4v', '.gif']);
+const UPLOAD_ALLOWED_EXT = new Set(['.mp4', '.webm', '.mov', '.ogg', '.m4v', '.gif', '.jpg', '.jpeg', '.png', '.webp']);
 
 /** 服务上传文件 / 完成上传文件的静态托管 */
 function serveUploadedFile(req, res, uploadDir, urlPath) {

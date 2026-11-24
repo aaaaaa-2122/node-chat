@@ -527,7 +527,7 @@
     // 带图/带视频的消息不合并——媒体气泡和文字气泡贴在一起会糊成一坨
     const grouped =
       !dayChanged && prev && prev.from === m.from && (m.ts || 0) - prev.ts < 180000 &&
-      !m.image && !m.video && !m.videoUrl && !prev.img && !prev.video && !prev.videoUrl;
+      !m.image && !m.imageUrl && !m.video && !m.videoUrl && !prev.img && !prev.video && !prev.videoUrl;
 
     if (grouped && prev.timeEl) prev.timeEl.remove();
     state.msgIds.add(m.id);
@@ -573,12 +573,13 @@
       t.textContent = m.text;
       bubble.appendChild(t);
     }
-    if (m.image) {
+    if (m.image || m.imageUrl) {
+      const isrc = m.image || m.imageUrl;
       const img = document.createElement('img');
-      img.src = m.image;
+      img.src = isrc;
       img.alt = '图片消息';
       img.loading = 'lazy';
-      img.addEventListener('click', () => showLightbox(m.image));
+      img.addEventListener('click', () => showLightbox(isrc));
       img.addEventListener('load', () => {
         if (!quiet) scrollBottom(true);
       });
@@ -877,7 +878,13 @@
     }
 
     const payload = { text: text || '' };
-    if (image) payload.image = image;
+    if (image) {
+      if (typeof image === 'object' && image.url) {
+        payload.imageUrl = image.url; // 图片走 HTTP 上传，带引用
+      } else {
+        payload.image = image; // 兼容旧的内联 data URL
+      }
+    }
     if (video) {
       if (typeof video === 'object' && video.url) {
         payload.videoUrl = video.url;
@@ -1008,22 +1015,13 @@
   async function pickImage(file) {
     if (!file) return;
     try {
-      let dataUrl;
-      if (file.type === 'image/gif') {
-        // GIF 走原样内联，保持动画（重编码会变成静态 JPEG）
-        dataUrl = await fileToDataUrl(file);
-        if (dataUrl.length > MAX_MEDIA_CHARS) {
-          toast('这张动图太大（上限约 1.1MB），换一个小点的吧');
-          return;
-        }
-      } else {
-        dataUrl = await compress(file, 1280, 0.82);
-      }
-      state.attachImage = dataUrl;
-      showAttach(dataUrl);
+      toast('正在上传图片…');
+      const up = await uploadFile(file); // 图片走 HTTP 上传，返回 { url, size, name }
+      state.attachImage = up; // { url, name, size }
+      showAttach(up.url);
       $('#input').focus();
     } catch (e) {
-      toast(e.message);
+      toast(e.message || '上传失败');
     }
   }
 

@@ -91,20 +91,18 @@ async function tapProxy(targetPort) {
   });
 }
 
-test('明文客户端照常可用（加密没有破坏兼容）', async () => {
+test('明文客户端被拒（强制加密，不再兼容明文）', async () => {
   const server = await boot();
   try {
-    const alice = await connect({
-      host: '127.0.0.1',
-      port: server.port,
-      username: 'alice',
-      password: '123456',
-    });
-    assert.strictEqual(alice.crypto, null, '明文连接不该有加密信道');
-    await alice.joinRoom('general');
-    const ack = await alice.sendToRoom('general', '明文还能说话');
-    assert.ok(ack.message.id);
-    alice.close();
+    await assert.rejects(
+      connect({
+        host: '127.0.0.1',
+        port: server.port,
+        username: 'alice',
+        password: '123456',
+      }),
+      '明文客户端应当被服务端拒绝'
+    );
   } finally {
     await server.stop();
   }
@@ -154,11 +152,10 @@ test('加密客户端能握手、登录、发消息', async () => {
   }
 });
 
-test('线上字节里找不到密码和正文，而明文连接能找到（对照组）', async () => {
+test('加密连接字节里找不到密码和正文（强制加密，无明文对照）', async () => {
   const server = await boot();
   const body = 'SECRET-' + Math.random().toString(36).slice(2, 10);
   try {
-    // --- 加密连接 ---
     const secureTap = await tapProxy(server.port);
     const s = await connect({
       host: '127.0.0.1',
@@ -179,23 +176,16 @@ test('线上字节里找不到密码和正文，而明文连接能找到（对�
     assert.ok(!secureBytes.includes('123456'), '密文连接里不该出现密码');
     assert.ok(secureBytes.includes('"e"'), '应当看到密文信封字段');
 
-    // --- 明文对照：同样内容，必须能在字节里搜到 ---
-    const plainTap = await tapProxy(server.port);
-    const p = await connect({
-      host: '127.0.0.1',
-      port: plainTap.port,
-      username: 'alice',
-      password: '123456',
-    });
-    await p.joinRoom('general');
-    await p.sendToRoom('general', body);
-    p.close();
-    await new Promise((r) => setTimeout(r, 100));
-    const plainBytes = plainTap.bytes().toString('utf8');
-    await plainTap.close();
-
-    assert.ok(plainBytes.includes(body), '对照组：明文连接应当能看到正文（否则这个测试没有意义）');
-    assert.ok(plainBytes.includes('123456'), '对照组：明文连接应当能看到密码');
+    // 明文连接应被拒（服务端强制加密）
+    await assert.rejects(
+      connect({
+        host: '127.0.0.1',
+        port: server.port,
+        username: 'alice',
+        password: '123456',
+      }),
+      '明文连接应当被服务端拒绝'
+    );
   } finally {
     await server.stop();
   }
