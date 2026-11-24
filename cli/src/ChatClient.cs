@@ -48,6 +48,69 @@ namespace NodeChat
             }
         }
 
+        /// <summary>注册（发邮箱验证码）；成功抛异常则失败</summary>
+        public Dictionary<string, object> Register(string user, string password, string email, int timeoutMs)
+        {
+            _sock.WriteLine(Protocol.Frame(Protocol.REGISTER,
+                Protocol.Data("username", user, "password", password, "email", email), "reg"));
+            while (true)
+            {
+                string line = _sock.ReadLine(timeoutMs);
+                if (line == null) throw new ChatClosedException("服务端关闭了连接（注册阶段）");
+                Dictionary<string, object> f = AsFrame(line);
+                if (f == null) continue;
+                string type = Json.S(f, "type");
+                Dictionary<string, object> data = Json.Obj(Get(f, "data"));
+                if (type == Protocol.REGISTER_ERR)
+                    throw new ChatException("register_failed", Json.S(data, "message") ?? "注册失败");
+                if (type == Protocol.REGISTER_OK) return data;
+            }
+        }
+
+        /// <summary>提交邮箱验证码；成功则已登录（返回 auth 数据）</summary>
+        public Dictionary<string, object> VerifyEmail(string user, string code, int timeoutMs)
+        {
+            _sock.WriteLine(Protocol.Frame(Protocol.VERIFY_EMAIL,
+                Protocol.Data("username", user, "code", code), "verify"));
+            while (true)
+            {
+                string line = _sock.ReadLine(timeoutMs);
+                if (line == null) throw new ChatClosedException("服务端关闭了连接（验证阶段）");
+                Dictionary<string, object> f = AsFrame(line);
+                if (f == null) continue;
+                string type = Json.S(f, "type");
+                Dictionary<string, object> data = Json.Obj(Get(f, "data"));
+                if (type == Protocol.VERIFY_ERR)
+                    throw new ChatException("verify_failed", Json.S(data, "message") ?? "验证失败");
+                if (type == Protocol.AUTH_OK)
+                {
+                    Me = Json.S(data, "user");
+                    AuthData = data;
+                    return data;
+                }
+                if (type == Protocol.VERIFY_OK && Json.B(data, "resent")) return data; // 重发回执
+            }
+        }
+
+        /// <summary>重发验证码</summary>
+        public Dictionary<string, object> ResendCode(string user, int timeoutMs)
+        {
+            _sock.WriteLine(Protocol.Frame(Protocol.RESEND_CODE,
+                Protocol.Data("username", user), "resend"));
+            while (true)
+            {
+                string line = _sock.ReadLine(timeoutMs);
+                if (line == null) throw new ChatClosedException("服务端关闭了连接（重发阶段）");
+                Dictionary<string, object> f = AsFrame(line);
+                if (f == null) continue;
+                string type = Json.S(f, "type");
+                Dictionary<string, object> data = Json.Obj(Get(f, "data"));
+                if (type == Protocol.VERIFY_ERR)
+                    throw new ChatException("resend_failed", Json.S(data, "message") ?? "重发失败");
+                if (type == Protocol.VERIFY_OK) return data;
+            }
+        }
+
         /// <summary>
         /// 发一条请求并等待响应。
         /// 默认按 id 匹配；个别帧（如 pong）服务端不带 id，可传 expectType 按类型匹配。

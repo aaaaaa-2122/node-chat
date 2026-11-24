@@ -27,6 +27,8 @@ namespace NodeChat
             public string Room;
             public string To;
             public string Image;
+            public string Email;
+            public string Code;
             public bool NoJoin;
             public readonly List<string> Positional = new List<string>();
         }
@@ -83,6 +85,30 @@ namespace NodeChat
             using (ChatClient client = new ChatClient())
             {
                 client.Connect(_o.Host, _o.Port, _o.TimeoutMs);
+
+                // 注册 / 验证是预认证阶段，不走 Auth
+                if (_command == "register")
+                {
+                    if (string.IsNullOrEmpty(_o.Email)) { Fail("usage", "register 需要 --email"); return 1; }
+                    client.Register(_o.User, _o.Password, _o.Email, _o.TimeoutMs);
+                    Console.WriteLine("注册受理，验证码已发到邮箱（" + _o.Email + "）。请用 verify-email 提交验证码。");
+                    return 0;
+                }
+                if (_command == "verify-email")
+                {
+                    string code = rest.Count > 0 ? rest[0] : (_o.Code ?? "");
+                    if (string.IsNullOrEmpty(code)) { Fail("usage", "verify-email <验证码> 或 --code <验证码>"); return 1; }
+                    client.VerifyEmail(_o.User, code, _o.TimeoutMs);
+                    Console.WriteLine("邮箱验证通过，已登录为 " + _o.User);
+                    return 0;
+                }
+                if (_command == "resend-code")
+                {
+                    client.ResendCode(_o.User, _o.TimeoutMs);
+                    Console.WriteLine("验证码已重发。");
+                    return 0;
+                }
+
                 Dictionary<string, object> auth = client.Auth(_o.User, _o.Password, _o.TimeoutMs);
 
                 switch (_command)
@@ -411,6 +437,8 @@ namespace NodeChat
                     case "--port": _o.Port = Int(Need(argv, ref i, a), a); break;
                     case "--user": case "-u": _o.User = Need(argv, ref i, a); break;
                     case "--password": case "-k": _o.Password = Need(argv, ref i, a); break;
+                    case "--email": _o.Email = Need(argv, ref i, a); break;
+                    case "--code": _o.Code = Need(argv, ref i, a); break;
                     case "--room": _o.Room = Need(argv, ref i, a); break;
                     case "--to": case "--with": _o.To = Need(argv, ref i, a); break;
                     case "--image": _o.Image = Need(argv, ref i, a); break;
