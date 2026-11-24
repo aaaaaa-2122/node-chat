@@ -12,7 +12,14 @@
 #
 set -euo pipefail
 
+# MSYS/Git Bash 下 pwd 输出 /d/...，javac/aapt2 等 Windows 工具会解析成不存在的 \d\...
+# 优先 cygpath -m 转成 D:/...，其次 pwd -W，最后原样（真 Linux 下 pwd 就是对的）。
 ROOT="$(cd "$(dirname "$0")" && pwd)"
+if command -v cygpath >/dev/null 2>&1; then
+  ROOT="$(cygpath -m "$ROOT")"
+elif pwd -W >/dev/null 2>&1; then
+  ROOT="$(cd "$(dirname "$0")" && pwd -W)"
+fi
 cd "$ROOT"
 APP_DIR="$ROOT/app"
 OUT_DIR="$ROOT/build"
@@ -60,8 +67,8 @@ ZIPALIGN="$BUILD_TOOLS/zipalign.exe"
 D8_JAR="$BUILD_TOOLS/lib/d8.jar"
 APKSIGNER_JAR="$BUILD_TOOLS/lib/apksigner.jar"
 
-VERSION_CODE=3
-VERSION_NAME=1.1.0
+VERSION_CODE=4
+VERSION_NAME=1.0.3
 
 echo "=============================================="
 echo " Node Chat 安卓端构建"
@@ -120,10 +127,11 @@ echo "▶ [4/6] 链接资源 + 打包 assets…"
 echo "▶ [5/6] 合入 dex 并对齐…"
 python - "$OUT_DIR/base.apk" "$OUT_DIR/dex/classes.dex" <<'PY'
 import sys, zipfile
+sys.stdout.reconfigure(encoding='utf-8', errors='replace')  # Windows 控制台默认 GBK，emoji 会炸
 apk, dex = sys.argv[1], sys.argv[2]
 with zipfile.ZipFile(apk, 'a', zipfile.ZIP_DEFLATED) as z:
     z.write(dex, 'classes.dex')
-print('   ✅ classes.dex 已写入')
+print('   [ok] classes.dex written')
 PY
 "$ZIPALIGN" -f 4 "$OUT_DIR/base.apk" "$OUT_DIR/aligned.apk"
 

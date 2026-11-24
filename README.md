@@ -124,10 +124,11 @@ cd deploy
 
 Release 里提供开箱即用的包：
 
-- `NodeChat-1.0.0-desktop-win64.zip` — 桌面端绿色版
-- `NodeChat-1.1.0-android.zip` — APK + 安装说明
-- `NodeChat-1.0.0-cli-win64.zip` — 命令行工具
-- `NodeChat-1.0.0-src.zip` — 源码快照
+- `NodeChat-1.0.3-desktop-win64.zip` — 桌面端绿色版
+- `NodeChat-1.0.3-android.zip` — APK + 安装说明
+- `NodeChat-1.0.3-cli-win64.zip` — 命令行工具
+- `NodeChat-1.0.3-all-in-one.zip` — 服务端 + 网页端全家桶
+- `NodeChat-1.0.3-src.zip` — 源码快照
 
 ## 传输加密（可选）
 
