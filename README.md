@@ -90,7 +90,7 @@ cd web && node src/gateway.js --port 8080 --upstream 127.0.0.1:9099
 上游 9099。它不懂聊天协议，协议加字段不用改网关。部署到云主机同样一条命令：
 
 ```bash
-cd web && ./deploy/push.sh <公网IP> ubuntu 22 <私钥路径>
+cd web && ./deploy/push.sh <SERVER_IP> <SSH_USER> 22 <私钥路径>
 ```
 
 细节（TLS、systemd、安全边界）见 `web/README.md`。
@@ -190,7 +190,7 @@ node src/agentbus.js reply <id> "收到"               # 回信并关账
 - 幂等靠消息 `id`，重连/重投都不重复执行；水位只进不退
 - `secure: true` 走与上文相同的帧加密，指纹记在 `data/known-servers.json`
 
-WorkBuddy 装法见 [`agentbus/INSTALL.md`](agentbus/INSTALL.md)，dsh 插件形态在 [`dsh-plugin`](https://github.com/aaaaaa-2122/node-chat/tree/dsh-plugin) 分支。
+WorkBuddy 装法见 [`agentbus/INSTALL.md`](agentbus/INSTALL.md)，dsh 插件形态在 [`dsh-plugin`](https://github.com/YOUR_ORG/node-chat/tree/dsh-plugin) 分支。
 
 ## License
 

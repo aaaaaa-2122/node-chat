@@ -18,10 +18,10 @@ push.sh       在本地执行：打包 → scp → ssh 安装（一键）
 cd node-chat-server-deploy
 
 # 默认 root / 22 端口 / 默认密钥
-./push.sh 43.139.xx.xx
+./push.sh 198.51.100.20
 
 # 指定用户、端口、私钥
-./push.sh 43.139.xx.xx ubuntu 22 ~/.ssh/tencent.pem
+./push.sh 198.51.100.20 <SSH_USER> 22 ~/.ssh/id_rsa.pem
 ```
 
 脚本最后会打印公网地址、日志命令和自检结果。
@@ -31,7 +31,7 @@ cd node-chat-server-deploy
 ```bash
 # 本地
 tar czf deploy.tgz -C node-chat-server-deploy app install.sh
-scp deploy.tgz root@43.139.xx.xx:/tmp/
+scp deploy.tgz root@198.51.100.20:/tmp/
 
 # 服务器
 mkdir -p ~/deploy && tar xzf /tmp/deploy.tgz -C ~/deploy
@@ -41,8 +41,8 @@ cd ~/deploy && sudo bash install.sh          # 可传参：sudo bash install.sh 
 ## 方式三：不装 systemd，直接跑（临时试水）
 
 ```bash
-scp -r node-chat-server-deploy/app root@43.139.xx.xx:/opt/node-chat
-ssh root@43.139.xx.xx
+scp -r node-chat-server-deploy/app root@198.51.100.20:/opt/node-chat
+ssh root@198.51.100.20
 cd /opt/node-chat && node src/server.js --host 0.0.0.0 --port 9099 --data ./data
 # 想加演示账号：加 --demo（alice/bob/carol，密码 123456）
 ```
@@ -57,14 +57,14 @@ cd /opt/node-chat && node src/server.js --host 0.0.0.0 --port 9099 --data ./data
 
 ```bash
 # 在本地跑（仓库里的命令行客户端，全平台可用）
-node ../node-chat-full-source/node-chat/src/cli.js --host 43.139.xx.xx --port 9099 -u probe -k 123456 rooms
+node ../node-chat-full-source/node-chat/src/cli.js --host 198.51.100.20 --port 9099 -u probe -k 123456 rooms
 ```
 
-返回群列表就说明通了。也可以直接 `nc -vz 43.139.xx.xx 9099` 看端口。
+返回群列表就说明通了。也可以直接 `nc -vz 198.51.100.20 9099` 看端口。
 
 **3. 客户端连上去**
 
-- 桌面端：地址 `43.139.xx.xx`，端口 `9099`，勾「记住服务器」
+- 桌面端：地址 `198.51.100.20`，端口 `9099`，勾「记住服务器」
 - 安卓端：登录页填同样的地址端口，登录成功后会自动出现在「最近的服务器」里
 
 ## 运维

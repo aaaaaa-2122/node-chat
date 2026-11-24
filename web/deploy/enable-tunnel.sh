@@ -5,14 +5,14 @@
 #   ./enable-tunnel.sh <TUNNEL_TOKEN> [HOSTNAME]
 #
 # 例：
-#   ./enable-tunnel.sh eyJhIjoi... nodechat.xn--0iv.gay
+#   ./enable-tunnel.sh eyJhIjoi... chat.example.com
 #
 # 前置条件（必须在 Cloudflare 控制台先做完）：
 #   1. 域名已接入 Cloudflare 且 NS 已生效（站点状态 Active）
 #   2. Zero Trust -> Networks -> Tunnels -> Create a tunnel -> Cloudflared
 #   3. 复制安装命令里的 token（eyJ 开头那一串）
 #   4. 在该 tunnel 的 Public Hostname 里加：
-#        Subdomain: nodechat    Domain: xn--0iv.gay
+#        Subdomain: nodechat    Domain: example.com
 #        Service:   https://localhost:443
 #        Additional application settings -> TLS -> No TLS Verify = ON
 #
@@ -24,7 +24,7 @@
 set -euo pipefail
 
 TOKEN="${1:-}"
-HOSTNAME_ARG="${2:-nodechat.xn--0iv.gay}"
+HOSTNAME_ARG="${2:-chat.example.com}"
 CF_BIN="/usr/local/bin/cloudflared"
 
 [ -n "$TOKEN" ] || { echo "用法: $0 <TUNNEL_TOKEN> [HOSTNAME]"; exit 1; }

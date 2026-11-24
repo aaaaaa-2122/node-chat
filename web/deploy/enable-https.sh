@@ -15,8 +15,8 @@
 #
 set -euo pipefail
 
-# sudo 默认保留调用者的 HOME（这里是 /home/ubuntu），acme.sh 会跟着装到
-# /home/ubuntu/.acme.sh，而 root 的 cron 又够不着。统一钉到 /root。
+# sudo 默认保留调用者的 HOME（这里是 /home/<SSH_USER>），acme.sh 会跟着装到
+# /home/<SSH_USER>/.acme.sh，而 root 的 cron 又够不着。统一钉到 /root。
 export HOME=/root
 
 DOMAIN="${1:-}"

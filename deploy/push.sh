@@ -5,8 +5,8 @@
 #   ./push.sh <公网IP> [ssh用户] [ssh端口] [私钥路径]
 #
 # 例：
-#   ./push.sh 43.139.xx.xx                      # 默认 root / 22 / 默认密钥
-#   ./push.sh 43.139.xx.xx ubuntu 22 ~/.ssh/tc.pem
+#   ./push.sh 198.51.100.20                      # 默认 root / 22 / 默认密钥
+#   ./push.sh 198.51.100.20 <SSH_USER> 22 ~/.ssh/id_rsa.pem
 #
 # 说明：
 #   - 走 SSH 密钥登录（密码登录需要交互输入，脚本里不做）

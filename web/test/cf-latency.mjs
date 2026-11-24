@@ -12,7 +12,7 @@
 // 跑完会留下若干 probe 开头的测试账号（私信记录随之），清理：
 //   python3 tools/clean-probe.py   （在服务器上以 root 执行，需先停 node-chat）
 
-const HOST = process.argv[2] || '111.230.141.216';
+const HOST = process.argv[2] || '203.0.113.10';
 // 网关只接受 /ws 路径的升级请求（gateway.js: url !== '/ws' 即 400）
 const URL = process.argv[3] || `ws://${HOST}/ws`;
 
