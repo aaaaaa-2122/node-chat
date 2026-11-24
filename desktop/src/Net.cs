@@ -143,6 +143,72 @@ namespace NodeChat
             throw new TimeoutException("认证超时，请检查服务器地址与端口");
         }
 
+        /// <summary>注册：发邮箱验证码。失败抛异常；成功返回 register_ok 的 data</summary>
+        public static Dictionary<string, object> Register(string host, int port, string user, string password, string email, int timeoutMs)
+        {
+            using (ChatClient c = new ChatClient())
+            {
+                c.Open(host, port, timeoutMs);
+                c.Send(Protocol.REGISTER, Protocol.Data("username", user, "password", password, "email", email));
+                return WaitReply(c, Protocol.REGISTER_ERR, timeoutMs);
+            }
+        }
+
+        /// <summary>提交邮箱验证码。成功则已登录（返回 auth_ok 的 data）</summary>
+        public static Dictionary<string, object> VerifyEmail(string host, int port, string user, string code, int timeoutMs)
+        {
+            using (ChatClient c = new ChatClient())
+            {
+                c.Open(host, port, timeoutMs);
+                c.Send(Protocol.VERIFY_EMAIL, Protocol.Data("username", user, "code", code));
+                Dictionary<string, object> data = WaitReply(c, Protocol.VERIFY_ERR, timeoutMs);
+                c.User = user;
+                return data;
+            }
+        }
+
+        /// <summary>重发验证码</summary>
+        public static Dictionary<string, object> ResendCode(string host, int port, string user, int timeoutMs)
+        {
+            using (ChatClient c = new ChatClient())
+            {
+                c.Open(host, port, timeoutMs);
+                c.Send(Protocol.RESEND_CODE, Protocol.Data("username", user));
+                return WaitReply(c, Protocol.VERIFY_ERR, timeoutMs);
+            }
+        }
+
+        /// <summary>读一帧直到匹配目标类型；遇 errType 抛异常。返回该帧的 data</summary>
+        private static Dictionary<string, object> WaitReply(ChatClient c, string errType, int timeoutMs)
+        {
+            DateTime deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+            while (DateTime.UtcNow < deadline)
+            {
+                string line;
+                if (!c.Incoming.TryDequeue(out line))
+                {
+                    if (!c.Alive) throw new IOException("连接被服务端关闭");
+                    Thread.Sleep(15);
+                    continue;
+                }
+                if (line == ChatClient.ClosedSentinel) throw new IOException("连接被服务端关闭");
+                Dictionary<string, object> frame = null;
+                try { frame = Json.Obj(Json.Parse(line)); } catch { continue; }
+                string type = Json.S(frame, "type");
+                Dictionary<string, object> data = Json.Obj(frame.ContainsKey("data") ? frame["data"] : null);
+                if (type == errType)
+                {
+                    c.Close();
+                    string msg = Json.S(data, "message");
+                    throw new UnauthorizedAccessException(msg.Length > 0 ? msg : "请求失败");
+                }
+                if (type == Protocol.AUTH_OK || type == Protocol.REGISTER_OK || type == Protocol.VERIFY_OK)
+                    return data ?? new Dictionary<string, object>();
+            }
+            c.Close();
+            throw new TimeoutException("请求超时");
+        }
+
         public void Close()
         {
             Alive = false;

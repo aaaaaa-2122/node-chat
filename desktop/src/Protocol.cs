@@ -12,6 +12,9 @@ namespace NodeChat
 
         // 客户端 -> 服务端
         public const string AUTH = "auth";
+        public const string REGISTER = "register";
+        public const string VERIFY_EMAIL = "verify_email";
+        public const string RESEND_CODE = "resend_code";
         public const string MSG = "msg";
         public const string GROUP = "group";
         public const string JOIN = "join";
@@ -27,6 +30,10 @@ namespace NodeChat
         // 服务端 -> 客户端
         public const string AUTH_OK = "auth_ok";
         public const string AUTH_ERR = "auth_err";
+        public const string REGISTER_OK = "register_ok";
+        public const string REGISTER_ERR = "register_err";
+        public const string VERIFY_OK = "verify_ok";
+        public const string VERIFY_ERR = "verify_err";
         public const string JOIN_OK = "join_ok";
         public const string LEAVE_OK = "leave_ok";
         public const string ACK = "ack";
