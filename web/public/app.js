@@ -490,7 +490,7 @@
     // 带图/带视频的消息不合并——媒体气泡和文字气泡贴在一起会糊成一坨
     const grouped =
       !dayChanged && prev && prev.from === m.from && (m.ts || 0) - prev.ts < 180000 &&
-      !m.image && !m.video && !prev.img && !prev.video;
+      !m.image && !m.video && !m.videoUrl && !prev.img && !prev.video && !prev.videoUrl;
 
     if (grouped && prev.timeEl) prev.timeEl.remove();
     state.msgIds.add(m.id);
@@ -547,14 +547,15 @@
       });
       bubble.appendChild(img);
     }
-    if (m.video) {
+    if (m.video || m.videoUrl) {
+      const vsrc = m.video || m.videoUrl;
       const v = document.createElement('video');
-      v.src = m.video;
+      v.src = vsrc;
       v.controls = true;
       v.preload = 'metadata';
       v.playsInline = true;
       v.title = '视频消息';
-      v.addEventListener('click', () => showVideoLightbox(m.video));
+      v.addEventListener('click', () => showVideoLightbox(vsrc));
       bubble.appendChild(v);
     }
     main.appendChild(bubble);
@@ -568,7 +569,7 @@
     row.appendChild(main);
     box.appendChild(row);
 
-    state.lastRow = { from: m.from, ts: m.ts || 0, timeEl: time, img: !!m.image, video: !!m.video };
+    state.lastRow = { from: m.from, ts: m.ts || 0, timeEl: time, img: !!m.image, video: !!(m.video || m.videoUrl) };
 
     if (!quiet) scrollBottom();
   }
@@ -827,7 +828,7 @@
     const box = $('#input');
     const text = box.value.trim();
     const image = state.attachImage;
-    const video = state.attachVideo;
+    const video = state.attachVideo; // { url, name, size } 或旧的 data URL
     if (!text && !image && !video) return;
     if (!state.conv) {
       toast('先选一个会话');
@@ -840,7 +841,13 @@
 
     const payload = { text: text || '' };
     if (image) payload.image = image;
-    if (video) payload.video = video;
+    if (video) {
+      if (typeof video === 'object' && video.url) {
+        payload.videoUrl = video.url;
+      } else {
+        payload.video = video; // 兼容旧的 data URL
+      }
+    }
 
     box.value = '';
     autoGrow(box);
@@ -983,38 +990,45 @@
     }
   }
 
+    /** 分块上传视频/动图到网关，返回 { url, size, name } */
+  async function uploadFile(file) {
+    const CHUNK = 4 * 1024 * 1024; // 与网关 MAX_CHUNK_SIZE 一致
+    const total = Math.max(1, Math.ceil(file.size / CHUNK));
+    const qname = encodeURIComponent(file.name);
+    let finalUrl = null;
+    let lastTotal = total;
+    for (let i = 0; i < total; i++) {
+      const blob = file.slice(i * CHUNK, Math.min(file.size, (i + 1) * CHUNK));
+      const res = await fetch('/upload?name=' + qname + '&chunk=' + i + '&total=' + total, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: blob,
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json || json.ok === false) {
+        throw new Error((json && json.message) || ('上传失败 chunk ' + (i + 1)));
+      }
+      lastTotal = json.total || total;
+      if (json.url) finalUrl = json.url; // 最后一块返回完成 URL
+    }
+    if (!finalUrl) throw new Error('上传未完成');
+    return { url: finalUrl, size: file.size, name: file.name };
+  }
+
   async function pickVideo(file) {
     if (!file) return;
     try {
-      const dataUrl = await fileToDataUrl(file);
-      if (dataUrl.length > MAX_VIDEO_CHARS) {
-        toast('视频太大（上限约 1.9MB），换个短一点的，或转成 GIF');
-        return;
-      }
-      state.attachVideo = dataUrl;
-      showVideoAttach(dataUrl);
+      toast('正在上传视频…');
+      const up = await uploadFile(file);
+      state.attachVideo = up; // { url, size, name }
+      showVideoAttach(up.url);
       $('#input').focus();
     } catch (e) {
-      toast(e.message);
+      toast(e.message || '上传失败');
     }
   }
 
-  async function pickAvatar(file) {
-    if (!file) return;
-    try {
-      const dataUrl = await compress(file, 256, 0.85);
-      const d = await request('profile', { action: 'set', avatar: dataUrl });
-      state.avatars[state.user] = d.avatar;
-      paintAvatar($('#meAvatar'), state.user);
-      renderSidebar();
-      renderMembers();
-      toast('头像已更新');
-    } catch (e) {
-      toast(e.message || '换头像失败');
-    }
-  }
-
-  // ================================================================ 抽屉
+// ================================================================ 抽屉
   function closeDrawers() {
     $('#sidebar').classList.remove('open');
     $('#membersPanel').classList.remove('open');

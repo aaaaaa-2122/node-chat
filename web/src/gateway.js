@@ -35,6 +35,7 @@ function parseArgs(argv) {
     upstreamHost: '127.0.0.1',
     upstreamPort: 9099,
     root: path.join(__dirname, '..', 'public'),
+    uploadDir: path.join(__dirname, '..', 'uploads'),
     maxFrame: 4 * 1024 * 1024,
     tlsCert: '',
     tlsKey: '',
@@ -56,6 +57,7 @@ function parseArgs(argv) {
       out.upstreamHost = h || '127.0.0.1';
       out.upstreamPort = Number(p || 9099);
     } else if (a === '--root') out.root = path.resolve(next());
+    else if (a === '--upload-dir') out.uploadDir = path.resolve(next());
     else if (a === '--max-frame') out.maxFrame = Number(next());
     else if (a === '--tls-cert') out.tlsCert = path.resolve(next());
     else if (a === '--tls-key') out.tlsKey = path.resolve(next());
@@ -65,6 +67,7 @@ function parseArgs(argv) {
     else if (a === '--help' || a === '-h') {
       process.stdout.write(
         '用法: node src/gateway.js [--port 8080] [--upstream 127.0.0.1:9099] [--root ./public]\n' +
+          '                             [--upload-dir ./uploads] [--max-frame N]\n' +
           '                             [--tls-cert cert.pem --tls-key key.pem]\n' +
           '                             [--redirect-port 80] [--acme-root /var/www/acme]\n' +
           '                             [--tls-host 只对这个域名跳转 https]\n'
@@ -85,7 +88,235 @@ const MIME = {
   '.png': 'image/png',
   '.ico': 'image/x-icon',
   '.woff2': 'font/woff2',
+  '.gif': 'image/gif',
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
+  '.mov': 'video/quicktime',
+  '.ogg': 'video/ogg',
+  '.m4v': 'video/x-m4v',
 };
+
+// ------------------------------------------------------------------ 视频文件上传 / 静态托管
+
+/** 单文件上限（分卷上传不受聊天单帧上限约束，这里给一个宽松总上限） */
+const MAX_UPLOAD_SIZE = 200 * 1024 * 1024; // 200MB
+/** 单块上限（浏览器按这个切分，也作为网关接收单块的上限） */
+const MAX_CHUNK_SIZE = 4 * 1024 * 1024; // 4MB
+/** 上传块保留的最长时间（超过视为未完成，清理时一并删除） */
+const UPLOAD_STALE_MS = 24 * 60 * 60 * 1000; // 24h
+/** 已完成视频文件的保留时长：超过 N 天自动清理 */
+const FILE_KEEP_MS = 7 * 24 * 60 * 60 * 1000; // 7 天
+/** 只接受这些扩展名作为上传文件 */
+const UPLOAD_ALLOWED_EXT = new Set(['.mp4', '.webm', '.mov', '.ogg', '.m4v', '.gif']);
+
+/** 服务上传文件 / 完成上传文件的静态托管 */
+function serveUploadedFile(req, res, uploadDir, urlPath) {
+  // urlPath 形如 /files/<stored>，只允许文件名安全字符，挡住 ../ 与绝对路径
+  const seg = urlPath.slice('/files/'.length);
+  if (!/^[A-Za-z0-9._-]{1,80}$/.test(seg)) {
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }).end('not found');
+    return;
+  }
+  const full = path.join(uploadDir, seg);
+  // 再兜一层：解析后必须仍落在 uploadDir 内
+  if (!full.startsWith(uploadDir + path.sep) && full !== uploadDir) {
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' }).end('forbidden');
+    return;
+  }
+  fs.stat(full, (err, st) => {
+    if (err || !st.isFile()) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }).end('not found');
+      return;
+    }
+    const ext = path.extname(full).toLowerCase();
+    // 视频支持 Range（拖动进度条），HTTP Range 是原生零依赖实现的
+    const range = req.headers.range;
+    let status = 200;
+    const headers = {
+      'Content-Type': MIME[ext] || 'application/octet-stream',
+      'Content-Length': st.size,
+      'Accept-Ranges': 'bytes',
+      'Cache-Control': 'public, max-age=31536000',
+    };
+    if (range) {
+      const m = /^bytes=(\d*)-(\d*)$/.exec(String(range));
+      if (!m) {
+        res.writeHead(416, { 'Content-Range': `bytes */${st.size}` }).end();
+        return;
+      }
+      let start = m[1] === '' ? undefined : Number(m[1]);
+      let end = m[2] === '' ? undefined : Number(m[2]);
+      if (start === undefined) {
+        // 后缀范围：最后 N 字节
+        const n = end === undefined ? st.size : end;
+        start = Math.max(0, st.size - n);
+        end = st.size - 1;
+      } else {
+        if (end === undefined) end = st.size - 1;
+      }
+      if (start > end || start >= st.size) {
+        res.writeHead(416, { 'Content-Range': `bytes */${st.size}` }).end();
+        return;
+      }
+      end = Math.min(end, st.size - 1);
+      status = 206;
+      headers['Content-Range'] = `bytes ${start}-${end}/${st.size}`;
+      headers['Content-Length'] = end - start + 1;
+      res.writeHead(status, headers);
+      fs.createReadStream(full, { start, end }).pipe(res);
+      return;
+    }
+    res.writeHead(status, headers);
+    fs.createReadStream(full).pipe(res);
+  });
+}
+
+/** 处理分卷上传请求。请求体是二进制块，地址带 name/chunk/total。 */
+function handleUpload(req, res, uploadDir, urlPath) {
+  // urlPath 形如 /upload?name=xxx.mp4&chunk=0&total=8
+  const u = new URL(urlPath, 'http://localhost');
+  const name = String(u.searchParams.get('name') || '');
+  const chunkRaw = u.searchParams.get('chunk');
+  const totalRaw = u.searchParams.get('total');
+  const chunk = Number(chunkRaw);
+  const total = Number(totalRaw);
+
+  const ext = path.extname(name).toLowerCase();
+  const base = path.basename(name, ext).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40);
+  if (!ext || !UPLOAD_ALLOWED_EXT.has(ext) || !base) {
+    res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' }).end(
+      JSON.stringify({ ok: false, error: '不支持的文件类型' })
+    );
+    return;
+  }
+  if (!Number.isInteger(chunk) || !Number.isInteger(total) || chunk < 0 || total < 1 || chunk >= total || total > 1000) {
+    res.writeHead(400, { 'Content-Type': 'application/json; charset=utf-8' }).end(
+      JSON.stringify({ ok: false, error: 'chunk/total 参数非法' })
+    );
+    return;
+  }
+  if (!('content-length' in req.headers)) {
+    res.writeHead(411, { 'Content-Type': 'application/json; charset=utf-8' }).end(
+      JSON.stringify({ ok: false, error: '缺少 Content-Length' })
+    );
+    return;
+  }
+  const bodyLen = Number(req.headers['content-length']);
+  if (bodyLen > MAX_CHUNK_SIZE) {
+    res.writeHead(413, { 'Content-Type': 'application/json; charset=utf-8' }).end(
+      JSON.stringify({ ok: false, error: '单块太大' })
+    );
+    return;
+  }
+
+  // 每个文件一个稳定 id：由 name+total 派生，这样同一次上传的所有分块落到同一组，天然可断点续传
+  const id = crypto.createHash('sha1').update(base + ':' + ext + ':' + total).digest('hex').slice(0, 16);
+  const partFile = path.join(uploadDir, `.${id}.${chunk}.part`);
+  const chunks = [];
+  let received = 0;
+  req.on('data', (chunkData) => {
+    received += chunkData.length;
+    if (received > MAX_CHUNK_SIZE) {
+      res.writeHead(413, { 'Content-Type': 'application/json; charset=utf-8' }).end(
+        JSON.stringify({ ok: false, error: '单块太大' })
+      );
+      req.destroy();
+      return;
+    }
+    chunks.push(chunkData);
+  });
+  req.on('end', () => {
+    const buf = Buffer.concat(chunks);
+    fs.writeFile(partFile, buf, (err) => {
+      if (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' }).end(
+          JSON.stringify({ ok: false, error: '写入失败' })
+        );
+        return;
+      }
+      // 判断是否已收齐所有块：每个块都存在
+      const allParts = [];
+      let complete = true;
+      for (let i = 0; i < total; i += 1) {
+        const p = path.join(uploadDir, `.${id}.${i}.part`);
+        if (i !== chunk && !fs.existsSync(p)) {
+          complete = false;
+          break;
+        }
+        allParts.push(p);
+      }
+      if (!complete) {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' }).end(
+          JSON.stringify({ ok: true, received: chunk + 1, total })
+        );
+        return;
+      }
+      // 收齐全部块：按顺序拼接为最终文件
+      const stored = `${id}${ext}`;
+      const finalFile = path.join(uploadDir, stored);
+      // 这里用流式拼接，避免大文件一次性占满内存
+      const out = fs.createWriteStream(finalFile);
+      const chain = () => {
+        const part = allParts.shift();
+        if (!part) {
+          out.end();
+          return;
+        }
+        // 注意：pipe() 返回的是目标（out）而不是源，必须把 'end' 挂在源可读流上
+        const rs = fs.createReadStream(part);
+        rs.on('error', () => out.destroy());
+        rs.on('end', chain);
+        rs.pipe(out, { end: false });
+      };
+      // 记录全部临时分块路径，用于合并完成后清理（chain 会 shift 消耗 allParts）
+      const partList = allParts.slice();
+      out.on('finish', () => {
+        for (const pp of partList) {
+          try { fs.unlinkSync(pp); } catch (_) {}
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' }).end(
+          JSON.stringify({ ok: true, url: `/files/${stored}`, size: fs.statSync(finalFile).size })
+        );
+      });
+      out.on('error', () => {
+        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' }).end(
+          JSON.stringify({ ok: false, error: '合并失败' })
+        );
+      });
+      chain();
+    });
+  });
+  req.on('error', () => {
+    /* 由上层统一处理 */
+  });
+}
+
+/** 删除超过保留期的已完成文件，以及超过驻留时间的未完成分块。 */
+function sweepUploads(uploadDir) {
+  fs.readdir(uploadDir, (err, entries) => {
+    if (err) return;
+    const now = Date.now();
+    for (const entry of entries) {
+      const full = path.join(uploadDir, entry);
+      let st;
+      try {
+        st = fs.statSync(full);
+      } catch (_) {
+        continue;
+      }
+      if (!st.isFile()) continue;
+      const isPart = /^\..+\.\d+\.part$/.test(entry);
+      // 视频文件超 7 天删除；未完成分块超 24h 删除
+      const keepMs = isPart ? UPLOAD_STALE_MS : FILE_KEEP_MS;
+      if (now - st.mtimeMs > keepMs) {
+        try {
+          fs.unlinkSync(full);
+          console.log(`[upload] 清理过期文件: ${entry}（${Math.round((now - st.mtimeMs) / 3600000)}h 前写入）`);
+        } catch (_) {}
+      }
+    }
+  });
+}
 
 function serveStatic(req, res, root) {
   const url = new URL(req.url, 'http://localhost');
@@ -401,6 +632,17 @@ function main() {
     res.setHeader('Referrer-Policy', 'same-origin');
     if (useTls) res.setHeader('Strict-Transport-Security', 'max-age=31536000');
 
+    // 视频分卷上传：POST /upload?name=xx.mp4&chunk=i&total=n
+    if (req.method === 'POST' && req.url.startsWith('/upload')) {
+      handleUpload(req, res, cfg.uploadDir, req.url);
+      return;
+    }
+    // 已上传视频的静态托管（支持 Range 拖动）：GET /files/<stored>
+    if (req.method === 'GET' && req.url.startsWith('/files/')) {
+      serveUploadedFile(req, res, cfg.uploadDir, req.url);
+      return;
+    }
+
     if (req.url === '/healthz') {
       const body = JSON.stringify({
         ok: true,
@@ -418,6 +660,11 @@ function main() {
     }
     serveStatic(req, res, root);
   };
+
+  // 确保上传目录存在，并启动「过期视频/分块自动清理」定时器
+  fs.mkdirSync(cfg.uploadDir, { recursive: true });
+  const sweepTimer = setInterval(() => sweepUploads(cfg.uploadDir), Number(process.env.UPLOAD_SWEEP_MS || 3600 * 1000));
+  sweepTimer.unref();
 
   // 有证书就上 HTTPS（WebSocket 自动变 wss，前端不用改）
   let server;
@@ -459,7 +706,8 @@ function main() {
       `Node Chat Web 网关已启动\n` +
         `   监听:   ${useTls ? 'https' : 'http'}://${cfg.host}:${cfg.port}\n` +
         `   上游:   ${cfg.upstreamHost}:${cfg.upstreamPort}\n` +
-        `   静态:   ${root}\n`
+        `   静态:   ${root}\n` +
+        `   上传:   ${cfg.uploadDir}（视频保留 7 天，超期自动清理）\n`
     );
   });
 
