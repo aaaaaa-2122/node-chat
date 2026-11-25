@@ -25,6 +25,11 @@ namespace NodeChat
         private TextField portField;
         private TextField userField;
         private TextField passField;
+        private TextField emailField;
+        private TextField verifyField;
+        private FlatButton registerButton;
+        private FlatButton verifyButton;
+        private FlatButton resendButton;
         private CheckBox rememberBox;
         private FlatButton connectButton;
         private FlatButton localButton;
@@ -39,7 +44,7 @@ namespace NodeChat
             FormBorderStyle = FormBorderStyle.FixedSingle;
             MaximizeBox = false;
             StartPosition = FormStartPosition.CenterScreen;
-            ClientSize = new Size(Ui.S(520), Ui.S(640));
+            ClientSize = new Size(Ui.S(520), Ui.S(760));
             BackColor = Color.FromArgb(246, 248, 252);
             Font = Ui.F(9f);
             AutoScaleMode = AutoScaleMode.None;
@@ -60,7 +65,7 @@ namespace NodeChat
         private void BuildUi()
         {
             card = new Panel();
-            card.SetBounds(Ui.S(46), Ui.S(52), Ui.S(428), Ui.S(500));
+            card.SetBounds(Ui.S(46), Ui.S(52), Ui.S(428), Ui.S(620));
             card.BackColor = Color.White;
             card.Paint += delegate (object s, PaintEventArgs e)
             {
@@ -161,13 +166,51 @@ namespace NodeChat
             passField.SetBounds(Ui.S(28), Ui.S(328), Ui.S(372), Ui.S(40));
             card.Controls.Add(passField);
 
+            Label lEmail = SmallLabel("邮箱（注册 / 验证用，登录可留空）");
+            lEmail.Location = new Point(Ui.S(28), Ui.S(374));
+            card.Controls.Add(lEmail);
+            emailField = new TextField(false);
+            emailField.SetPlaceholder("you@example.com");
+            emailField.SetBounds(Ui.S(28), Ui.S(394), Ui.S(372), Ui.S(40));
+            card.Controls.Add(emailField);
+
+            Label lVerify = SmallLabel("邮箱验证码（收到后填写）");
+            lVerify.Location = new Point(Ui.S(28), Ui.S(440));
+            card.Controls.Add(lVerify);
+            verifyField = new TextField(false);
+            verifyField.SetPlaceholder("6 位验证码");
+            verifyField.SetBounds(Ui.S(28), Ui.S(460), Ui.S(180), Ui.S(40));
+            card.Controls.Add(verifyField);
+            verifyButton = new FlatButton();
+            verifyButton.Text = "验证";
+            verifyButton.Kind = ButtonKind.Primary;
+            verifyButton.Radius = Ui.S(9);
+            verifyButton.Font = Ui.F(9f, true);
+            verifyButton.SetBounds(Ui.S(216), Ui.S(460), Ui.S(88), Ui.S(40));
+            verifyButton.Click += delegate { VerifyEmail(); };
+            card.Controls.Add(verifyButton);
+            resendButton = new FlatButton();
+            resendButton.Text = "重发";
+            resendButton.Kind = ButtonKind.Link;
+            resendButton.Font = Ui.F(8.2f);
+            resendButton.SetBounds(Ui.S(312), Ui.S(460), Ui.S(88), Ui.S(40));
+            resendButton.Click += delegate { ResendCode(); };
+            card.Controls.Add(resendButton);
+            registerButton = new FlatButton();
+            registerButton.Text = "注册（发验证码）";
+            registerButton.Kind = ButtonKind.Link;
+            registerButton.Font = Ui.F(8.2f);
+            registerButton.SetBounds(Ui.S(28), Ui.S(506), Ui.S(180), Ui.S(28));
+            registerButton.Click += delegate { Register(); };
+            card.Controls.Add(registerButton);
+
             rememberBox = new CheckBox();
             rememberBox.Text = "记住这台服务器（只记地址和用户名，不记密码）";
             rememberBox.Font = Ui.F(8.2f);
             rememberBox.ForeColor = Theme.Muted;
             rememberBox.AutoSize = true;
             rememberBox.BackColor = Color.Transparent;
-            rememberBox.Location = new Point(Ui.S(26), Ui.S(380));
+            rememberBox.Location = new Point(Ui.S(26), Ui.S(544));
             rememberBox.Checked = prefs.RememberServer;
             card.Controls.Add(rememberBox);
 
@@ -176,7 +219,7 @@ namespace NodeChat
             connectButton.Kind = ButtonKind.Primary;
             connectButton.Radius = Ui.S(9);
             connectButton.Font = Ui.F(10f, true);
-            connectButton.SetBounds(Ui.S(28), Ui.S(410), Ui.S(372), Ui.S(44));
+            connectButton.SetBounds(Ui.S(28), Ui.S(574), Ui.S(372), Ui.S(44));
             connectButton.Click += delegate { Connect(); };
             card.Controls.Add(connectButton);
 
@@ -184,7 +227,7 @@ namespace NodeChat
             localButton.Text = "用本机服务端（127.0.0.1:9099）";
             localButton.Kind = ButtonKind.Link;
             localButton.Font = Ui.F(8.2f);
-            localButton.SetBounds(Ui.S(28), Ui.S(458), Ui.S(220), Ui.S(22));
+            localButton.SetBounds(Ui.S(28), Ui.S(626), Ui.S(220), Ui.S(22));
             localButton.Click += delegate
             {
                 hostField.Value = "127.0.0.1";
@@ -199,7 +242,7 @@ namespace NodeChat
             messageLabel.Font = Ui.F(8.2f);
             messageLabel.BackColor = Color.Transparent;
             messageLabel.TextAlign = ContentAlignment.MiddleRight;
-            messageLabel.SetBounds(Ui.S(240), Ui.S(458), Ui.S(160), Ui.S(22));
+            messageLabel.SetBounds(Ui.S(240), Ui.S(626), Ui.S(160), Ui.S(22));
             card.Controls.Add(messageLabel);
 
             Label footer = new Label();
@@ -379,6 +422,95 @@ namespace NodeChat
             });
         }
 
+        // 解析 host:port 输入框（支持粘贴 host:port）
+        private bool TryHostPort(out string host, out int port)
+        {
+            host = hostField.Value.Trim(); port = 9099;
+            string pt = portField.Value.Trim();
+            if (host.Contains(":") && !host.Contains("://"))
+            {
+                int idx = host.LastIndexOf(':');
+                string tail = host.Substring(idx + 1); int parsed;
+                if (int.TryParse(tail, out parsed) && parsed > 0 && parsed <= 65535)
+                { port = parsed; host = host.Substring(0, idx); }
+            }
+            if (host.Length == 0) { Fail("请填写服务器地址", hostField); return false; }
+            if (!int.TryParse(pt, out port) || port <= 0 || port > 65535) { Fail("端口需为 1~65535", portField); return false; }
+            return true;
+        }
+        private void BusyOn(string text)
+        {
+            busy = true; messageLabel.ForeColor = Theme.Muted; messageLabel.Text = text;
+            connectButton.Enabled = false; registerButton.Enabled = false; verifyButton.Enabled = false; resendButton.Enabled = false;
+            Cursor = Cursors.WaitCursor;
+        }
+        private void BusyOff()
+        {
+            busy = false; Cursor = Cursors.Default;
+            connectButton.Enabled = true; connectButton.Text = "连  接";
+            registerButton.Enabled = true; verifyButton.Enabled = true; resendButton.Enabled = true;
+        }
+        private void Register()
+        {
+            if (busy) return;
+            string u = userField.Value.Trim(), pw = passField.Value, em = emailField.Value.Trim();
+            if (!NameRe.IsMatch(u)) { Fail("用户名格式不对", userField); return; }
+            if (pw.Length == 0) { Fail("请填写密码", passField); return; }
+            if (em.Length == 0 || !em.Contains("@")) { Fail("请填写邮箱", emailField); return; }
+            string h; int p; if (!TryHostPort(out h, out p)) return;
+            BusyOn("正在注册并发送验证码…");
+            Task.Run(delegate
+            {
+                try
+                {
+                    ChatClient.Register(h, p, u, pw, em, 9000);
+                    BeginInvoke((MethodInvoker)delegate
+                    {
+                        BusyOff(); messageLabel.ForeColor = Theme.Green;
+                        messageLabel.Text = "验证码已发到 " + em + "，请查收后填写验证码并点「验证」";
+                    });
+                }
+                catch (Exception ex) { BeginInvoke((MethodInvoker)delegate { BusyOff(); Fail(ex.Message, null); }); }
+            });
+        }
+        private void VerifyEmail()
+        {
+            if (busy) return;
+            string u = userField.Value.Trim(), code = verifyField.Value.Trim();
+            if (!NameRe.IsMatch(u)) { Fail("请填写用户名", userField); return; }
+            if (code.Length != 6) { Fail("请输入 6 位验证码", verifyField); return; }
+            string h; int p; if (!TryHostPort(out h, out p)) return;
+            BusyOn("正在验证…");
+            Task.Run(delegate
+            {
+                try
+                {
+                    ChatClient.VerifyEmail(h, p, u, code, 9000);
+                    BeginInvoke((MethodInvoker)delegate { BusyOff(); messageLabel.ForeColor = Theme.Green; });
+                    Dictionary<string, object> auth;
+                    ChatClient c = ChatClient.ConnectAuth(h, p, u, passField.Value, 9000, out auth);
+                    BeginInvoke((MethodInvoker)delegate { OnConnected(c, auth, h, p, u, passField.Value); });
+                }
+                catch (Exception ex) { BeginInvoke((MethodInvoker)delegate { BusyOff(); Fail(ex.Message, null); }); }
+            });
+        }
+        private void ResendCode()
+        {
+            if (busy) return;
+            string u = userField.Value.Trim();
+            if (!NameRe.IsMatch(u)) { Fail("请填写用户名", userField); return; }
+            string h; int p; if (!TryHostPort(out h, out p)) return;
+            BusyOn("正在重发…");
+            Task.Run(delegate
+            {
+                try
+                {
+                    ChatClient.ResendCode(h, p, u, 9000);
+                    BeginInvoke((MethodInvoker)delegate { BusyOff(); messageLabel.ForeColor = Theme.Green; messageLabel.Text = "验证码已重发"; });
+                }
+                catch (Exception ex) { BeginInvoke((MethodInvoker)delegate { BusyOff(); Fail(ex.Message, null); }); }
+            });
+        }
         private void Fail(string msg, TextField focus)
         {
             messageLabel.ForeColor = Theme.Red;

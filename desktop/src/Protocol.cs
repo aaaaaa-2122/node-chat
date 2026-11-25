@@ -11,6 +11,7 @@ namespace NodeChat
         public const string VERSION = "1.0";
 
         // 客户端 -> 服务端
+        public const string SECURE = "secure";
         public const string AUTH = "auth";
         public const string REGISTER = "register";
         public const string VERIFY_EMAIL = "verify_email";
@@ -28,6 +29,8 @@ namespace NodeChat
         public const string QUIT = "quit";
 
         // 服务端 -> 客户端
+        public const string SECURE_OK = "secure_ok";
+        public const string SECURE_ERR = "secure_err";
         public const string AUTH_OK = "auth_ok";
         public const string AUTH_ERR = "auth_err";
         public const string REGISTER_OK = "register_ok";

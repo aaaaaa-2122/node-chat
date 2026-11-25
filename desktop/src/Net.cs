@@ -19,6 +19,7 @@ namespace NodeChat
         private StreamReader reader;
         private StreamWriter writer;
         private readonly object gate = new object();
+        private SecureChannel _channel; // 强制加密：握手后所有帧加解密
         private Thread readThread;
 
         public readonly ConcurrentQueue<string> Incoming = new ConcurrentQueue<string>();
@@ -52,6 +53,9 @@ namespace NodeChat
             writer.NewLine = "\n";
             writer.AutoFlush = true;
 
+            // 强制加密：读线程启动前同步完成 secure 握手（握手帧明文）
+            SecureHandshake(timeoutMs);
+
             Host = host;
             Port = port;
             Alive = true;
@@ -62,6 +66,42 @@ namespace NodeChat
             readThread.Start();
         }
 
+        /// <summary>强制加密：连接后同步做 secure 握手（读线程尚未启动）</summary>
+        private void SecureHandshake(int timeoutMs)
+        {
+            byte[] priv, pub;
+            CryptoPrimitives.GenerateX25519(out priv, out pub);
+            string frame = Protocol.Frame(Protocol.SECURE,
+                Protocol.Data("v", 1, "cpub", Convert.ToBase64String(pub)), null);
+            lock (gate) { writer.WriteLine(frame); writer.Flush(); }
+
+            string line = reader.ReadLine();
+            if (line == null) throw new IOException("服务端在加密握手阶段关闭了连接");
+            Dictionary<string, object> f = Json.Obj(Json.Parse(line));
+            string type = Json.S(f, "type");
+            Dictionary<string, object> data = Json.Obj(GetD(f, "data"));
+            if (type == Protocol.SECURE_ERR)
+                throw new IOException("加密握手被拒: " + (Json.S(data, "message") ?? "unknown"));
+            if (type != Protocol.SECURE_OK)
+                throw new IOException("加密握手应答异常: " + type);
+
+            byte[] spub = Convert.FromBase64String(Json.S(data, "spub") ?? "");
+            byte[] shared = CryptoPrimitives.X25519(priv, spub);
+            byte[] salt = CryptoPrimitives.Sha256(Concat(pub, spub));
+            byte[] c2s = CryptoPrimitives.HkdfSha256(shared, salt, Encoding.ASCII.GetBytes("nodechat-c2s"));
+            byte[] s2c = CryptoPrimitives.HkdfSha256(shared, salt, Encoding.ASCII.GetBytes("nodechat-s2c"));
+            _channel = new SecureChannel(c2s, s2c, 0);
+        }
+        private static object GetD(Dictionary<string, object> d, string key)
+        {
+            object v; return d != null && d.TryGetValue(key, out v) ? v : null;
+        }
+        private static byte[] Concat(byte[] a, byte[] b)
+        {
+            byte[] o = new byte[a.Length + b.Length];
+            Array.Copy(a, o, a.Length); Array.Copy(b, 0, o, a.Length, b.Length);
+            return o;
+        }
         private void ReadLoop()
         {
             try
@@ -71,7 +111,7 @@ namespace NodeChat
                     string line = reader.ReadLine();
                     if (line == null) break;
                     if (line.Length == 0) continue;
-                    Incoming.Enqueue(line);
+                    Incoming.Enqueue(_channel == null ? line : _channel.Open(line));
                 }
             }
             catch { }
@@ -90,7 +130,7 @@ namespace NodeChat
             lock (gate)
             {
                 if (writer == null) throw new InvalidOperationException("连接已断开");
-                writer.WriteLine(line);
+                writer.WriteLine(_channel == null ? line : _channel.Seal(line));
                 writer.Flush();
             }
         }
