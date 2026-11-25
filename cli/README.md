@@ -28,8 +28,16 @@ NodeChatCli.exe --host <你的服务器IP> -u alice -k 123456 --json rooms
 | `ping` | 连通性 + 延迟 + 当前登录身份 |
 | `avatar [用户]` / `set-avatar <图>` | 查 / 设头像 |
 
-通用选项：`--host`、`--port`、`-u/--user`、`-k/--password`、`--json`、`--timeout <ms>`、
-`--image <文件>`（超过 600KB 自动缩放压缩）、`--no-join`、`--version`、`--help`。
+通用选项：`--host`、`--port`、`-u/--user`、`-k/--password`（可留空 = 免密码登录）、`--json`、
+`--timeout <ms>`、`--file <文件>`（走网关 HTTP 上传，任意类型/大小）、`--gateway-port <端口>`、
+`--at <成员>`（@ 某人，逗号分隔）、`--no-join`、`--version`、`--help`。
+
+发文件需要该服务器上跑着网页网关（默认 8080）：
+
+```bash
+NodeChatCli --host 192.168.1.8 -u alice --file ./设计稿.pdf group 设计组 "最新版"
+NodeChatCli --host 192.168.1.8 -u alice --at bob,carl group 大厅 "@bob 看下这个"
+```
 
 ## 输出格式（--json）
 
@@ -91,8 +99,8 @@ dotnet build -c Release
 :: 产物: bin\Release\net48\NodeChatCli.exe
 ```
 
-代码结构：`LineSocket.cs`（带超时的按行 TCP）、`ChatClient.cs`（认证 / 请求响应 / 收帧、图片压缩）、
-`Program.cs`（命令与参数），`Json.cs` / `Protocol.cs` 与桌面端共用。
+代码结构：`LineSocket.cs`（带超时的按行 TCP）、`ChatClient.cs`（认证 / 请求响应 / 收帧）、
+`FileUpload.cs`（分块 HTTP 上传到网关）、`Program.cs`（命令与参数），`Json.cs` / `Protocol.cs` 与桌面端共用。
 
 ## 与 Node 版 CLI 的差别
 

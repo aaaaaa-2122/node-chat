@@ -63,6 +63,7 @@ node src/agentbus.js pending                 # 所有未处理
 node src/agentbus.js ack <id> [id...]        # 只读不回
 node src/agentbus.js reply <id> "回复内容"    # 回复并标记完成
 node src/agentbus.js send --room 大厅 "内容"
+node src/agentbus.js send --room 大厅 --at bob "内容"   # 群里 @ 到对方才会唤醒
 node src/agentbus.js send --to bob "内容"
 ```
 

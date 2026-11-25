@@ -53,8 +53,11 @@ node <AB>/src/agentbus.js ack <id>        # 只读不回
 node src/agentbus.js status      # 守护进程在不在、连没连上
 node src/agentbus.js pending     # 有没有漏处理的
 node src/agentbus.js send --room 大厅 "内容"
+node src/agentbus.js send --room 大厅 --at bob "内容"   # 群里 @ 到对方才会唤醒他
 node src/agentbus.js send --to bob "内容"
 ```
+
+> 群聊里**必须 @ 对方**（正文写 `@bob` 或加 `--at bob`），否则消息只会落历史，对方收不到唤醒。
 
 ## 故障排查
 

@@ -19,14 +19,16 @@ namespace NodeChat
             public string Host = "127.0.0.1";
             public int Port = Protocol.DEFAULT_PORT;
             public string User = "guest";
-            public string Password = "123456";
+            public string Password = ""; // 密码可选：留空即免密码登录
             public bool Json;
             public int TimeoutMs = 10000;
             public int DurationSec = 15;
             public int Limit;
             public string Room;
             public string To;
-            public string Image;
+            public string File;
+            public int GatewayPort = FileUpload.DefaultGatewayPort;
+            public readonly List<string> At = new List<string>();
             public bool NoJoin;
             public readonly List<string> Positional = new List<string>();
         }
@@ -128,8 +130,14 @@ namespace NodeChat
             Dictionary<string, object> data = Protocol.Data("text", text);
             if (toRoom) data["room"] = target; else data["to"] = target;
 
-            if (!string.IsNullOrEmpty(_o.Image))
-                data["image"] = ImageTools.ToDataUrl(_o.Image, Protocol.MAX_IMAGE_LEN, 1280);
+            if (!string.IsNullOrEmpty(_o.File))
+            {
+                // 文件本体走网关 HTTP 上传，消息里只带 {url,name,size,mime} 引用
+                data["file"] = FileUpload.Upload(_o.Host, _o.GatewayPort, _o.File, Math.Max(_o.TimeoutMs, 60000));
+            }
+
+            List<string> mentions = MentionsOf(text);
+            if (mentions.Count > 0) data["mentions"] = mentions;
 
             if (toRoom && !_o.NoJoin)
             {
@@ -263,6 +271,7 @@ namespace NodeChat
             {
                 Dictionary<string, object> m = Json.Obj(item);
                 string body = Json.S(m, "text");
+                if (string.IsNullOrEmpty(body) && m.ContainsKey("file")) body = FileLabel(m);
                 if (string.IsNullOrEmpty(body) && m.ContainsKey("image")) body = "[图片]";
                 Console.WriteLine("[" + FmtTime(Json.N(m, "ts")) + "] " + Json.S(m, "from") + ": " + body);
             }
@@ -342,6 +351,7 @@ namespace NodeChat
                 if (isMessage)
                 {
                     string body = Json.S(data, "text");
+                    if (string.IsNullOrEmpty(body) && data.ContainsKey("file")) body = FileLabel(data);
                     if (string.IsNullOrEmpty(body) && data.ContainsKey("image")) body = "[图片]";
                     string scope = type == Protocol.GROUP ? ("[群聊] " + Json.S(data, "room")) : "[私聊]";
                     Console.WriteLine("[" + FmtTime(Json.N(data, "ts")) + "] " +
@@ -413,7 +423,10 @@ namespace NodeChat
                     case "--password": case "-k": _o.Password = Need(argv, ref i, a); break;
                     case "--room": _o.Room = Need(argv, ref i, a); break;
                     case "--to": case "--with": _o.To = Need(argv, ref i, a); break;
-                    case "--image": _o.Image = Need(argv, ref i, a); break;
+                    case "--image": _o.File = Need(argv, ref i, a); break;
+                    case "--file": _o.File = Need(argv, ref i, a); break;
+                    case "--gateway-port": _o.GatewayPort = Int(Need(argv, ref i, a), a); break;
+                    case "--at": AddAt(Need(argv, ref i, a)); break;
                     case "--limit": _o.Limit = Int(Need(argv, ref i, a), a); break;
                     case "--timeout": _o.TimeoutMs = Int(Need(argv, ref i, a), a); break;
                     case "--duration": _o.DurationSec = Int(Need(argv, ref i, a), a); break;
@@ -435,6 +448,16 @@ namespace NodeChat
             return argv[++i];
         }
 
+        /// <summary>--at a,b 或多次 --at a --at b</summary>
+        private static void AddAt(string value)
+        {
+            foreach (string part in (value ?? "").Split(','))
+            {
+                string n = part.Trim().TrimStart('@');
+                if (n.Length > 0 && !_o.At.Contains(n)) _o.At.Add(n);
+            }
+        }
+
         private static int Int(string s, string opt)
         {
             int v;
@@ -447,6 +470,28 @@ namespace NodeChat
         {
             if (parts.Count <= from) return "";
             return string.Join(" ", parts.GetRange(from, parts.Count - from).ToArray());
+        }
+
+        /// <summary>文本里的 @xxx + --at 指定的成员，去重后作为 mentions 发出</summary>
+        private static List<string> MentionsOf(string text)
+        {
+            List<string> list = new List<string>();
+            foreach (string n in _o.At)
+            {
+                if (!string.IsNullOrEmpty(n) && !list.Contains(n)) list.Add(n);
+            }
+            if (!string.IsNullOrEmpty(text))
+            {
+                foreach (System.Text.RegularExpressions.Match m in
+                         System.Text.RegularExpressions.Regex.Matches(
+                             text, "@([A-Za-z0-9_\\u4e00-\\u9fa5.\\-]{1,24})"))
+                {
+                    string n = m.Groups[1].Value.TrimEnd('.', '-');
+                    if (!string.IsNullOrEmpty(n) && n != _o.User && !list.Contains(n)) list.Add(n);
+                }
+            }
+            if (list.Count > 32) list = list.GetRange(0, 32);
+            return list;
         }
 
         private static object Get(Dictionary<string, object> d, string key)
@@ -484,6 +529,18 @@ namespace NodeChat
             }
         }
 
+        /// <summary>文件消息在终端里的展示文案</summary>
+        private static string FileLabel(Dictionary<string, object> m)
+        {
+            Dictionary<string, object> f = Json.Obj(Get(m, "file"));
+            if (f == null) return "[文件]";
+            string name = Json.S(f, "name") ?? "文件";
+            long size = Json.N(f, "size");
+            string url = Json.S(f, "url") ?? "";
+            string sizeText = size > 0 ? (" " + (size / 1024.0).ToString("0.#") + "KB") : "";
+            return "[文件] " + name + sizeText + (url.Length > 0 ? " " + url : "");
+        }
+
         private static string FmtTime(long ms)
         {
             if (ms <= 0) return "--:--";
@@ -516,17 +573,21 @@ namespace NodeChat
   --host <地址>          服务端地址（默认 127.0.0.1）
   --port <端口>          服务端端口（默认 " + Protocol.DEFAULT_PORT + @"）
   -u, --user <用户名>    用户名（默认 guest）
-  -k, --password <密码>  密码（默认 123456）
+  -k, --password <密码>  密码（默认空 = 免密码登录）
   --json                 输出单行 JSON（便于脚本/agent 解析）
   --timeout <毫秒>       单次请求超时（默认 10000）
-  --image <文件>         随消息附带图片（超过 600KB 自动缩放压缩）
+  --file <文件>          随消息发送任意文件（走网关 HTTP 上传，大小/格式不限）
+  --gateway-port <端口>  网关 HTTP 端口（默认 " + FileUpload.DefaultGatewayPort + @"，需和服务端在同一台机器）
+  --at <成员>            @ 成员，逗号分隔可写多个（文本里的 @xxx 也会自动识别）
   --no-join              发群消息时不自动加入
   --version / --help
 
 示例:
-  NodeChatCli --host <你的服务器IP> --port 9099 -u alice -k 123456 rooms
-  NodeChatCli --host <你的服务器IP> -u alice -k 123456 group 大厅 ""大家好""
-  NodeChatCli --host <你的服务器IP> -u alice -k 123456 --json listen --duration 30
+  NodeChatCli --host <你的服务器IP> --port 9099 -u alice rooms
+  NodeChatCli --host <你的服务器IP> -u alice group 大厅 ""大家好""
+  NodeChatCli --host <你的服务器IP> -u alice --at bob,carl group 大厅 ""@bob 看下这个""
+  NodeChatCli --host <你的服务器IP> -u alice --file ./设计稿.pdf group 设计组 ""最新版""
+  NodeChatCli --host <你的服务器IP> -u alice --json listen --duration 30
 
 退出码: 0 成功 / 1 出错 / 2 用法错误
 ";

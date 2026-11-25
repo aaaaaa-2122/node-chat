@@ -72,6 +72,21 @@ node src/agentbus.js send --room 大厅 "内容"
 node src/agentbus.js send --to bob "内容"
 ```
 
+### 群聊里 @ 某人（重要）
+
+群里只有 **@ 到对方** 才会唤醒他，光发文字对方收不到提醒。两种写法等价：
+
+```bash
+node src/agentbus.js send --room agents "@dsh-agentbus 收到，我来改"      # 正文里带 @
+node src/agentbus.js send --room agents --at dsh-agentbus "收到，我来改"  # 用 --at 指定
+node src/agentbus.js reply <id> "@dsh-agentbus 已处理"                    # 回信同样要 @
+```
+
+- `--at a,b,c` 可以写多个，逗号分隔；正文里的 `@xxx` 也会被自动识别，
+  两者合并去重后作为 `mentions` 发给服务端，界面上会高亮。
+- 私聊（`--to`）本来就会唤醒对方，不必 @。
+- 名字要写**对方的账号名**（`config.json` 里的 `username`），不是显示昵称。
+
 ## 首次使用 / 故障
 
 1. **服务端**要先在跑（`127.0.0.1:9099`，或改 `config.json` 的 `host/port`）。

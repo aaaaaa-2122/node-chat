@@ -441,7 +441,9 @@ class Daemon {
 
       // 私聊回给发信人（e.from），不是 e.to——e.to 是「我」自己，会撞「不能给自己发私聊」
       const isDm = e.kind === 'dm' || (!e.room && e.to);
-      const payload = isDm ? { room: null, to: e.from, text: text } : { room: e.room, to: null, text: text };
+      const payload = isDm
+        ? { room: null, to: e.from, text: text, mentions: body.mentions, file: body.file }
+        : { room: e.room, to: null, text: text, mentions: body.mentions, file: body.file };
       return this._outbound(payload, (err, ack) => {
         if (err) return sendJson(res, 502, { ok: false, error: err.message });
         this.store.setStatus(id, 'done', { repliedAt: Date.now() });
@@ -453,10 +455,20 @@ class Daemon {
       const text = String(body.text || '');
       if (!text.trim()) return sendJson(res, 400, { ok: false, error: 'text 不能为空' });
       if (!body.room && !body.to) return sendJson(res, 400, { ok: false, error: '需要 room 或 to' });
-      return this._outbound({ room: body.room, to: body.to, text: text, image: body.image }, (err, ack) => {
-        if (err) return sendJson(res, 502, { ok: false, error: err.message });
-        sendJson(res, 200, { ok: true, sent: ack });
-      });
+      return this._outbound(
+        {
+          room: body.room,
+          to: body.to,
+          text: text,
+          image: body.image,
+          file: body.file,
+          mentions: body.mentions,
+        },
+        (err, ack) => {
+          if (err) return sendJson(res, 502, { ok: false, error: err.message });
+          sendJson(res, 200, { ok: true, sent: ack });
+        }
+      );
     }
 
     sendJson(res, 404, { ok: false, error: '未知接口 ' + p });
@@ -470,6 +482,8 @@ class Daemon {
       ? { room: payload.room, text: payload.text }
       : { to: payload.to, text: payload.text };
     if (payload.image) data.image = payload.image;
+    if (payload.file) data.file = payload.file;
+    if (Array.isArray(payload.mentions) && payload.mentions.length) data.mentions = payload.mentions;
 
     this.conn
       .request(type, data, { expectType: 'ack', timeoutMs: 15000 })
