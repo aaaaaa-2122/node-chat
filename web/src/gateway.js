@@ -24,6 +24,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { StringDecoder } = require('string_decoder');
+const SB = require('../../server/src/secure'); // 网关连上游时做 secure 握手（强制加密）
 
 const WS_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
@@ -105,10 +106,9 @@ const MIME = {
 const MAX_UPLOAD_SIZE = 200 * 1024 * 1024; // 200MB
 /** 单块上限（浏览器按这个切分，也作为网关接收单块的上限） */
 const MAX_CHUNK_SIZE = 4 * 1024 * 1024; // 4MB
-/** 上传块保留的最长时间（超过视为未完成，清理时一并删除） */
-const UPLOAD_STALE_MS = 24 * 60 * 60 * 1000; // 24h
-/** 已完成视频文件的保留时长：超过 N 天自动清理 */
-const FILE_KEEP_MS = 7 * 24 * 60 * 60 * 1000; // 7 天
+/** 上传存储配额：uploads 目录占用超过 70% 时开始清理最旧文件 */
+const UPLOAD_MAX_BYTES = Number(process.env.UPLOAD_MAX_BYTES || 2 * 1024 * 1024 * 1024); // 默认 2GB 配额
+const UPLOAD_TRIGGER_RATIO = 0.7; // 超过配额 70% 触发清理
 /** 只接受这些扩展名作为上传文件 */
 const UPLOAD_ALLOWED_EXT = new Set(['.mp4', '.webm', '.mov', '.ogg', '.m4v', '.gif', '.jpg', '.jpeg', '.png', '.webp']);
 
@@ -298,7 +298,8 @@ function handleUpload(req, res, uploadDir, urlPath) {
 function sweepUploads(uploadDir) {
   fs.readdir(uploadDir, (err, entries) => {
     if (err) return;
-    const now = Date.now();
+    const files = [];
+    let total = 0;
     for (const entry of entries) {
       const full = path.join(uploadDir, entry);
       let st;
@@ -308,18 +309,24 @@ function sweepUploads(uploadDir) {
         continue;
       }
       if (!st.isFile()) continue;
-      const isPart = /^\..+\.\d+\.part$/.test(entry);
-      // 视频文件超 7 天删除；未完成分块超 24h 删除
-      const keepMs = isPart ? UPLOAD_STALE_MS : FILE_KEEP_MS;
-      if (now - st.mtimeMs > keepMs) {
-        try {
-          fs.unlinkSync(full);
-          console.log(`[upload] 清理过期文件: ${entry}（${Math.round((now - st.mtimeMs) / 3600000)}h 前写入）`);
-        } catch (_) {}
-      }
+      total += st.size;
+      files.push({ entry, full, size: st.size, mtimeMs: st.mtimeMs });
+    }
+    const threshold = UPLOAD_MAX_BYTES * UPLOAD_TRIGGER_RATIO;
+    if (total <= threshold) return; // 未超过配额 70%，不清理
+    // 超过 70%：按最旧优先删除，直到回到阈值以内
+    files.sort((a, b) => a.mtimeMs - b.mtimeMs);
+    for (const f of files) {
+      if (total <= threshold) break;
+      try {
+        fs.unlinkSync(f.full);
+        total -= f.size;
+        console.log('[upload] 存储超 ' + Math.round(UPLOAD_TRIGGER_RATIO * 100) + '%，清理最旧: ' + f.entry + ' (' + Math.round(f.size / 1024) + 'KB)');
+      } catch (_) {}
     }
   });
 }
+
 
 function serveStatic(req, res, root) {
   const url = new URL(req.url, 'http://localhost');
@@ -489,6 +496,19 @@ function bridge(socket, head, cfg, req) {
   const upstream = net.connect(cfg.upstreamPort, cfg.upstreamHost);
   upstream.setNoDelay(true);
 
+  // 强制加密：网关连上游做 secure 握手，之后所有帧加解密
+  let channel = null;
+  let upSecurePhase = 'handshake'; // handshake -> ready
+  let handshakeBuf = '';
+  let wsBuf = [];
+  let keys = null;   // 网关侧 X25519 临时密钥对（握手用）
+  let pubRaw = null; // 网关侧公钥原始字节
+  upstream.on('connect', () => {
+    keys = SB.newX25519();
+    pubRaw = SB.rawPublicKey(keys.publicKey);
+    const sf = JSON.stringify({ type: 'secure', id: 'up-secure', data: { v: SB.SECURE_VERSION, cpub: SB.b64(pubRaw) } });
+    upstream.write(sf + '\n');
+  });
   let closed = false;
   const cleanup = (why) => {
     if (closed) return;
@@ -518,12 +538,23 @@ function bridge(socket, head, cfg, req) {
     }
     for (const f of frames) {
       if (f.opcode === 0x1 || f.opcode === 0x2) {
-        // 原样转发；服务端按行解析，缺换行则补一个
+        // 补换行；服务端按行解析
         let payload = f.payload;
         if (payload.length && payload[payload.length - 1] !== 0x0a) {
           payload = Buffer.concat([payload, Buffer.from('\n')]);
         }
-        if (!upstream.destroyed) upstream.write(payload);
+        if (upSecurePhase !== 'ready') {
+          // 握手完成前暂存浏览器帧
+          wsBuf.push(payload);
+        } else if (channel && !upstream.destroyed) {
+          // 握手完成后加密转发
+          try {
+            upstream.write(JSON.stringify(channel.seal(JSON.parse(payload.toString('utf8').trim()))) + '\n');
+          } catch (e) {
+            cleanup('加密转发失败: ' + e.message);
+            return;
+          }
+        }
       } else if (f.opcode === 0x8) {
         try {
           socket.write(closeFrame(CLOSE.normal, ''));
@@ -536,17 +567,66 @@ function bridge(socket, head, cfg, req) {
     }
   });
 
-  // ---- 服务端 -> 浏览器
+  // ---- 服务端 -> 浏览器（含 secure 握手阶段）
   const decoder = new StringDecoder('utf8');
   let buf = '';
   upstream.on('data', (chunk) => {
+    if (upSecurePhase !== 'ready') {
+      // 握手阶段：累积行，处理 secure_ok / secure_err
+      handshakeBuf += chunk.toString('utf8');
+      let idx;
+      while ((idx = handshakeBuf.indexOf('\n')) !== -1) {
+        const line = handshakeBuf.slice(0, idx);
+        handshakeBuf = handshakeBuf.slice(idx + 1);
+        if (!line) continue;
+        let m;
+        try {
+          m = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (m.type === 'secure_ok') {
+          try {
+            const res = SB.finishHandshake(m.data, keys, pubRaw, null);
+            channel = res.channel;
+          } catch (e) {
+            cleanup('secure 握手失败: ' + e.message);
+            return;
+          }
+          upSecurePhase = 'ready';
+          for (const wf of wsBuf) {
+            if (!upstream.destroyed && channel) {
+              try {
+                upstream.write(JSON.stringify(channel.seal(JSON.parse(wf.toString('utf8').trim()))) + '\n');
+              } catch (e) {}
+            }
+          }
+          wsBuf = [];
+        } else if (m.type === 'secure_err') {
+          cleanup('secure 握手被拒: ' + ((m.data && m.data.message) || 'unknown'));
+          return;
+        }
+      }
+      return;
+    }
+    // 握手完成：解密后按行转发
     buf += decoder.write(chunk);
     let idx;
     while ((idx = buf.indexOf('\n')) !== -1) {
       const line = buf.slice(0, idx).trim();
       buf = buf.slice(idx + 1);
       if (!line) continue;
-      if (!socket.destroyed) socket.write(encodeFrame(0x1, Buffer.from(line, 'utf8')));
+      let plain;
+      try {
+        plain = channel.open(JSON.parse(line));
+      } catch (e) {
+        console.log(`${tag} 解密失败: ${e.message}`);
+        cleanup('解密失败');
+        return;
+      }
+      if (plain && !socket.destroyed) {
+        socket.write(encodeFrame(0x1, Buffer.from(JSON.stringify(plain), 'utf8')));
+      }
     }
     if (buf.length > cfg.maxFrame) {
       console.log(`${tag} 上游单帧过大，断开`);
