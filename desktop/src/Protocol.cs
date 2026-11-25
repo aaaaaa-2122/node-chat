@@ -39,6 +39,8 @@ namespace NodeChat
         public const int MAX_IMAGE_LEN = 600 * 1000;   // 单张图片 data URL 上限
         public const int MAX_AVATAR_LEN = 100 * 1000;  // 头像 data URL 上限
         public const int DEFAULT_PORT = 9099;
+        /// <summary>网页网关的 HTTP 端口（文件上传走它，服务端和网关一般同机）</summary>
+        public const int GATEWAY_PORT = 8080;
 
         public static string Frame(string type, Dictionary<string, object> data, string id)
         {

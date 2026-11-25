@@ -53,8 +53,9 @@ namespace NodeChat
         private readonly HashSet<string> joined = new HashSet<string>();
 
         private string myAvatar = "";
-        private string pendingImage = null;
-        private string pendingImageName = "";
+        // 待发送的文件：{url,name,size,mime}（文件本体已经 POST 到网关，消息里只带引用）
+        private Dictionary<string, object> pendingFile = null;
+        private string pendingFileName = "";
 
         // 控件
         private Panel sidebar;
@@ -302,6 +303,8 @@ namespace NodeChat
             messages.AvatarUrl = delegate (string u) { return AvatarOf(u); };
             messages.ImageActivated += delegate (object s, string url) { ShowImage(url); };
             messages.AvatarActivated += delegate (object s, string user) { OpenDm(user); };
+            messages.MentionRequested += delegate (object s, string user) { InsertMention(user); };
+            messages.FileActivated += delegate (object s, Dictionary<string, object> f) { OpenFile(f); };
             messages.AllowDrop = true;
             messages.DragEnter += OnDragEnter;
             messages.DragDrop += OnDragDrop;
@@ -354,10 +357,10 @@ namespace NodeChat
             attachPanel.Controls.Add(attachRemove);
 
             attachButton = new FlatButton();
-            attachButton.Text = "图片";
+            attachButton.Text = "文件";
             attachButton.Kind = ButtonKind.Soft;
             attachButton.Font = Ui.F(9f);
-            attachButton.Click += delegate { PickImage(); };
+            attachButton.Click += delegate { PickFile(); };
             composer.Controls.Add(attachButton);
 
             input = new TextField(true);
@@ -867,6 +870,22 @@ namespace NodeChat
             m.To = Json.S(d, "to");
             m.Text = Json.S(d, "text");
             m.Image = Json.S(d, "image");
+            object fileObj;
+            if (d.TryGetValue("file", out fileObj)) m.File = fileObj as Dictionary<string, object>;
+            object menObj;
+            if (d.TryGetValue("mentions", out menObj))
+            {
+                List<object> raw = menObj as List<object>;
+                if (raw != null)
+                {
+                    m.Mentions = new List<string>();
+                    foreach (object o in raw)
+                    {
+                        string s = o as string;
+                        if (!string.IsNullOrEmpty(s)) m.Mentions.Add(s);
+                    }
+                }
+            }
             m.Ts = Json.N(d, "ts");
             if (m.Ts <= 0) m.Ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             m.Self = m.From == me;
@@ -958,6 +977,11 @@ namespace NodeChat
         private static string PreviewOf(ChatMessage m)
         {
             if (!string.IsNullOrEmpty(m.Text)) return m.Text.Replace("\r", " ").Replace("\n", " ");
+            if (m.File != null)
+            {
+                string name = Json.S(m.File, "name");
+                return "[文件] " + (string.IsNullOrEmpty(name) ? "" : name);
+            }
             if (!string.IsNullOrEmpty(m.Image)) return "[图片]";
             return "";
         }
@@ -1231,7 +1255,7 @@ namespace NodeChat
                 return;
             }
             string text = input.Value.TrimEnd('\r', '\n');
-            if (text.Length == 0 && pendingImage == null) return;
+            if (text.Length == 0 && pendingFile == null) return;
             if (text.Length > Protocol.MAX_TEXT)
             {
                 toast.Show("消息太长（上限 " + Protocol.MAX_TEXT + " 字）");
@@ -1239,18 +1263,21 @@ namespace NodeChat
             }
             Conversation c = EnsureConv(currentKey);
             Dictionary<string, object> data = new Dictionary<string, object>();
+            List<string> mentions = MentionsOf(text);
             if (c.IsRoom)
             {
                 data["room"] = c.Name;
                 data["text"] = text;
-                if (pendingImage != null) data["image"] = pendingImage;
+                if (pendingFile != null) data["file"] = pendingFile;
+                if (mentions.Count > 0) data["mentions"] = mentions;
                 client.Send(Protocol.GROUP, data);
             }
             else
             {
                 data["to"] = c.Name;
                 data["text"] = text;
-                if (pendingImage != null) data["image"] = pendingImage;
+                if (pendingFile != null) data["file"] = pendingFile;
+                if (mentions.Count > 0) data["mentions"] = mentions;
                 client.Send(Protocol.MSG, data);
             }
             input.Value = "";
@@ -1265,34 +1292,43 @@ namespace NodeChat
             });
         }
 
-        private void PickImage()
+        private void PickFile()
         {
             using (OpenFileDialog dlg = new OpenFileDialog())
             {
-                dlg.Title = "选择要发送的图片";
-                dlg.Filter = "图片文件|*.jpg;*.jpeg;*.png;*.gif;*.bmp;*.webp|所有文件|*.*";
+                dlg.Title = "选择要发送的文件（任意类型）";
+                dlg.Filter = "所有文件|*.*";
                 if (dlg.ShowDialog(this) != DialogResult.OK) return;
-                AttachImage(dlg.FileName);
+                AttachFile(dlg.FileName);
             }
         }
 
-        private void AttachImage(string path)
+        /// <summary>把文件分块上传到网页网关，成功后挂到待发送区（消息里只带引用）</summary>
+        private void AttachFile(string path)
         {
             try
             {
+                FileInfo fi = new FileInfo(path);
+                if (fi.Length == 0)
+                {
+                    toast.Show("空文件就不用发了");
+                    return;
+                }
                 Cursor = Cursors.WaitCursor;
-                string dataUrl = ImageTools.ToDataUrl(path, 1280, Protocol.MAX_IMAGE_LEN - 20000);
-                pendingImage = dataUrl;
-                pendingImageName = Path.GetFileName(path);
-                attachThumb.Image = ImageTools.FromDataUrl(dataUrl, Ui.S(168), Ui.S(104));
-                attachName.Text = pendingImageName + "　·　" + (dataUrl.Length / 1024) + " KB";
+                toast.Show("正在上传 " + fi.Name + "（" + (fi.Length / 1024.0 / 1024).ToString("0.0") + " MB）…");
+                Dictionary<string, object> f = FileUpload.Upload(host, Protocol.GATEWAY_PORT, path, 60000);
+                pendingFile = f;
+                pendingFileName = Json.S(f, "name");
+                attachThumb.Image = null;
+                attachThumb.Visible = false;
+                attachName.Text = "📄 " + pendingFileName + "　·　" + (fi.Length / 1024) + " KB（已上传）";
                 attachPanel.Visible = true;
                 LayoutChildren();
-                toast.Show("图片已添加，点发送即可发出");
+                toast.Show("文件已就绪，点发送即可");
             }
             catch (Exception ex)
             {
-                MessageBox.Show(this, ex.Message, "无法添加图片", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                MessageBox.Show(this, ex.Message, "无法发送文件", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
             finally
             {
@@ -1300,10 +1336,65 @@ namespace NodeChat
             }
         }
 
-        private void ClearAttachment()
+        /// <summary>文本里的 @xxx（去重、排除自己），随消息一起发给服务端</summary>
+        private List<string> MentionsOf(string text)
         {
-            pendingImage = null;
-            pendingImageName = "";
+            List<string> list = new List<string>();
+            if (string.IsNullOrEmpty(text)) return list;
+            foreach (System.Text.RegularExpressions.Match m in
+                     System.Text.RegularExpressions.Regex.Matches(
+                         text, "@([A-Za-z0-9_\\u4e00-\\u9fa5.\\-]{1,24})"))
+            {
+                string name = m.Groups[1].Value.TrimEnd('.', '-');
+                if (!string.IsNullOrEmpty(name) && name != me && !list.Contains(name)) list.Add(name);
+            }
+            if (list.Count > 32) list = list.GetRange(0, 32);
+            return list;
+        }
+
+        /// <summary>右键头像后把 @某人 插到输入框末尾</summary>
+        private void InsertMention(string who)
+        {
+            if (string.IsNullOrEmpty(who)) return;
+            string cur = input.Value;
+            if (cur.Length > 0 && !char.IsWhiteSpace(cur[cur.Length - 1])) cur += " ";
+            input.Value = cur + "@" + who + " ";
+            try
+            {
+                input.Box.SelectionStart = input.Value.Length;
+                input.Box.SelectionLength = 0;
+            }
+            catch { }
+            input.Box.Focus();
+            UpdateCharCount();
+        }
+
+        /// <summary>点文件卡片：用默认浏览器打开网关上的下载地址</summary>
+        private void OpenFile(Dictionary<string, object> f)
+        {
+            string url = Json.S(f, "url");
+            if (string.IsNullOrEmpty(url)) return;
+            if (!url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+                !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            {
+                url = "http://" + host + ":" + Protocol.GATEWAY_PORT + url;
+            }
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url)
+                {
+                    UseShellExecute = true,
+                });
+            }
+            catch (Exception ex)
+            {
+                toast.Show("打不开文件：" + ex.Message);
+            }
+        }
+
+        private void ClearAttachment()
+        {            pendingFile = null;
+            pendingFileName = "";
             if (attachThumb.Image != null)
             {
                 Image old = attachThumb.Image;
@@ -1324,16 +1415,8 @@ namespace NodeChat
         {
             string[] files = e.Data.GetData(DataFormats.FileDrop) as string[];
             if (files == null || files.Length == 0) return;
-            string f = files[0];
-            string ext = Path.GetExtension(f).ToLowerInvariant();
-            if (ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".gif" || ext == ".bmp" || ext == ".webp")
-            {
-                AttachImage(f);
-            }
-            else
-            {
-                toast.Show("只能发送图片文件");
-            }
+            // 任意文件都走同一条路：HTTP 上传到网关
+            AttachFile(files[0]);
         }
 
         // ================================================================ 其它

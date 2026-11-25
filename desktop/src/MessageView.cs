@@ -15,6 +15,8 @@ namespace NodeChat
         public string To = "";
         public string Text = "";
         public string Image = "";
+        public Dictionary<string, object> File; // {url,name,size,mime}
+        public List<string> Mentions;
         public string Event = "";
         public long Ts;
         public bool Self;
@@ -65,6 +67,10 @@ namespace NodeChat
         public Func<string, string> AvatarUrl;
         public event EventHandler<string> ImageActivated;
         public event EventHandler<string> AvatarActivated;
+        /// <summary>右键头像 → 想在输入框里 @ 这个人</summary>
+        public event EventHandler<string> MentionRequested;
+        /// <summary>点击文件卡片 → 打开下载地址（参数是 {url,name,size,mime}）</summary>
+        public event EventHandler<Dictionary<string, object>> FileActivated;
 
         private sealed class Row
         {
@@ -77,6 +83,7 @@ namespace NodeChat
             public Rectangle Avatar;
             public Rectangle Bubble;
             public Rectangle Img;
+            public Rectangle FileCard;
             public Rectangle Text;
             public Rectangle Pill;
         }
@@ -245,9 +252,19 @@ namespace NodeChat
                     textH = ts.Height;
                 }
 
-                int innerW = Math.Max(imgW, textW);
+                // 文件卡片：固定高度，宽度按最长边收着，别把气泡撑爆
+                int fileW = 0, fileH = 0;
+                if (m.File != null)
+                {
+                    fileW = Math.Min(maxBubble - padX * 2, Ui.S(280));
+                    fileH = Ui.S(52);
+                }
+
+                int innerW = Math.Max(Math.Max(imgW, textW), fileW);
                 int bubbleW = innerW + padX * 2;
-                int bubbleH = padY * 2 + textH + imgH + (textH > 0 && imgH > 0 ? Ui.S(8) : 0);
+                int stackH = textH + imgH + fileH;
+                int stacks = (textH > 0 ? 1 : 0) + (imgH > 0 ? 1 : 0) + (fileH > 0 ? 1 : 0);
+                int bubbleH = padY * 2 + stackH + (stacks > 1 ? Ui.S(8) * (stacks - 1) : 0);
 
                 int nameH = Ui.S(19);
                 int rightEdge = Width - padR;
@@ -265,11 +282,13 @@ namespace NodeChat
                     ? new Rectangle(rightEdge - avatarSize, bubbleY, avatarSize, avatarSize)
                     : new Rectangle(padL, bubbleY, avatarSize, avatarSize);
                 if (imgH > 0) r.Img = new Rectangle(bubbleX + padX, bubbleY + padY, imgW, imgH);
-                if (textH > 0)
+                int cursorY = bubbleY + padY + (imgH > 0 ? imgH + Ui.S(8) : 0);
+                if (fileH > 0)
                 {
-                    int ty = bubbleY + padY + (imgH > 0 ? imgH + Ui.S(8) : 0);
-                    r.Text = new Rectangle(bubbleX + padX, ty, textW + 2, textH);
+                    r.FileCard = new Rectangle(bubbleX + padX, cursorY, fileW, fileH);
+                    cursorY += fileH + Ui.S(8);
                 }
+                if (textH > 0) r.Text = new Rectangle(bubbleX + padX, cursorY, textW + 2, textH);
                 rows.Add(r);
                 y += r.Height;
             }
@@ -291,6 +310,7 @@ namespace NodeChat
             r.Avatar.Y += dy;
             r.Bubble.Y += dy;
             r.Img.Y += dy;
+            if (!r.FileCard.IsEmpty) r.FileCard.Y += dy;
             r.Text.Y += dy;
             r.Pill.Y += dy;
         }
@@ -377,6 +397,37 @@ namespace NodeChat
                             using (GraphicsPath path = Ui.Round(ir, Ui.S(9))) g.DrawPath(pen, path);
                         }
                     }
+                }
+
+                if (!r.FileCard.IsEmpty)
+                {
+                    Rectangle fr = new Rectangle(r.FileCard.X, r.FileCard.Y - scroll, r.FileCard.Width, r.FileCard.Height);
+                    Color fbg = r.M.Self ? Color.FromArgb(64, 255, 255, 255) : Color.FromArgb(238, 241, 253);
+                    Color fbd = r.M.Self ? Color.FromArgb(105, 255, 255, 255) : Color.FromArgb(214, 220, 246);
+                    Ui.FillRound(g, fr, Ui.S(10), fbg);
+                    Ui.StrokeRound(g, fr, Ui.S(10), fbd, 1f);
+
+                    string fname = Json.S(r.M.File, "name");
+                    if (string.IsNullOrEmpty(fname)) fname = "文件";
+                    string icon = FileIcon(fname);
+                    Rectangle icoRect = new Rectangle(fr.X + Ui.S(8), fr.Y, Ui.S(28), fr.Height);
+                    TextRenderer.DrawText(g, icon, Ui.F(13f), icoRect,
+                        r.M.Self ? Color.White : Theme.Accent,
+                        TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter |
+                        TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);
+
+                    Color nameColor = r.M.Self ? Color.White : Theme.Text;
+                    Color metaColor = r.M.Self ? Color.FromArgb(225, 255, 255, 255) : Color.FromArgb(128, 137, 158);
+                    int tx = fr.X + Ui.S(40);
+                    int tw = fr.Width - Ui.S(48);
+                    TextRenderer.DrawText(g, fname, Ui.F(9f, true),
+                        new Rectangle(tx, fr.Y + Ui.S(8), tw, Ui.S(18)), nameColor,
+                        TextFormatFlags.Left | TextFormatFlags.VerticalCenter |
+                        TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis);
+                    TextRenderer.DrawText(g, FileSizeText(Json.N(r.M.File, "size")) + " · 点击下载", Ui.F(8f),
+                        new Rectangle(tx, fr.Y + Ui.S(26), tw, Ui.S(16)), metaColor,
+                        TextFormatFlags.Left | TextFormatFlags.VerticalCenter |
+                        TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis);
                 }
 
                 if (!r.Text.IsEmpty)
@@ -487,11 +538,11 @@ namespace NodeChat
 
             int idx = RowAt(e.Y + scroll);
             int imgIdx = -1;
-            if (idx >= 0 && rows[idx].M != null && !rows[idx].Img.IsEmpty)
+            if (idx >= 0 && rows[idx].M != null)
             {
-                Rectangle ir = rows[idx].Img;
                 Point p = new Point(e.X, e.Y + scroll);
-                if (ir.Contains(p)) imgIdx = idx;
+                if (!rows[idx].Img.IsEmpty && rows[idx].Img.Contains(p)) imgIdx = idx;
+                else if (!rows[idx].FileCard.IsEmpty && rows[idx].FileCard.Contains(p)) imgIdx = idx;
             }
             if (idx != hoverRow || imgIdx != hoverImage)
             {
@@ -541,6 +592,11 @@ namespace NodeChat
                 if (ImageActivated != null) ImageActivated(this, r.M.Image);
                 return;
             }
+            if (!r.FileCard.IsEmpty && r.FileCard.Contains(p))
+            {
+                if (FileActivated != null && r.M.File != null) FileActivated(this, r.M.File);
+                return;
+            }
             if (r.Avatar.Contains(p) && !r.M.Self && !r.M.IsSystem)
             {
                 if (AvatarActivated != null) AvatarActivated(this, r.M.From);
@@ -555,6 +611,19 @@ namespace NodeChat
             if (idx < 0) return;
             Row r = rows[idx];
             if (r.M == null) return;
+
+            // 右键头像 → @ 他（和网页端/手机端一致）
+            Point rp = new Point(e.X, e.Y + scroll);
+            if (!r.M.Self && !r.M.IsSystem && r.Avatar.Contains(rp) && MentionRequested != null)
+            {
+                ContextMenuStrip am = new ContextMenuStrip();
+                am.Font = Ui.F(9f);
+                string who = r.M.From;
+                am.Items.Add("@ " + who, null, delegate { MentionRequested(this, who); });
+                am.Show(this, e.Location);
+                return;
+            }
+
             ContextMenuStrip menu = new ContextMenuStrip();
             menu.Font = Ui.F(9f);
             if (!string.IsNullOrEmpty(r.M.Text))
@@ -571,6 +640,41 @@ namespace NodeChat
                 });
             }
             if (menu.Items.Count > 0) menu.Show(this, e.Location);
+        }
+
+        /// <summary>按扩展名给文件配个图标（和网页端/手机端保持一致）</summary>
+        private static string FileIcon(string name)
+        {
+            string ext = "";
+            int dot = (name ?? "").LastIndexOf('.');
+            if (dot >= 0 && dot < name.Length - 1) ext = name.Substring(dot + 1).ToLowerInvariant();
+            switch (ext)
+            {
+                case "png": case "jpg": case "jpeg": case "gif": case "webp": case "bmp": case "avif":
+                    return "🖼";
+                case "mp4": case "mov": case "mkv": case "webm": case "avi": case "m4v":
+                    return "🎬";
+                case "mp3": case "wav": case "flac": case "aac": case "ogg": case "m4a":
+                    return "🎵";
+                case "pdf": return "📕";
+                case "doc": case "docx": case "rtf": return "📝";
+                case "txt": case "md": case "log": return "📃";
+                case "xls": case "xlsx": case "csv": return "📊";
+                case "ppt": case "pptx": return "📽";
+                case "zip": case "rar": case "7z": case "tar": case "gz": return "🗜";
+                case "apk": case "iso": case "dmg": return "📦";
+                case "exe": case "msi": return "⚙";
+                default: return "📄";
+            }
+        }
+
+        private static string FileSizeText(long size)
+        {
+            if (size <= 0) return "未知大小";
+            if (size < 1024) return size + " B";
+            if (size < 1024 * 1024) return (size / 1024.0).ToString("0.0") + " KB";
+            if (size < 1024L * 1024 * 1024) return (size / 1024.0 / 1024).ToString("0.0") + " MB";
+            return (size / 1024.0 / 1024 / 1024).ToString("0.00") + " GB";
         }
 
         private void SaveImage(string dataUrl)

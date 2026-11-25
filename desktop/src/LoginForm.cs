@@ -151,12 +151,12 @@ namespace NodeChat
             userField.SetBounds(Ui.S(28), Ui.S(252), Ui.S(372), Ui.S(40));
             card.Controls.Add(userField);
 
-            Label l4 = SmallLabel("密码");
+            Label l4 = SmallLabel("密码（可留空）");
             l4.Location = new Point(Ui.S(28), Ui.S(308));
             card.Controls.Add(l4);
 
             passField = new TextField(false);
-            passField.SetPlaceholder("密码");
+            passField.SetPlaceholder("留空即免密码登录");
             passField.Box.UseSystemPasswordChar = true;
             passField.SetBounds(Ui.S(28), Ui.S(328), Ui.S(372), Ui.S(40));
             card.Controls.Add(passField);
@@ -245,7 +245,7 @@ namespace NodeChat
             if (user != null) userField.Value = user;
             if (pass != null) passField.Value = pass;
 
-            if (host != null && user != null && pass != null)
+            if (host != null && user != null)
             {
                 Shown += delegate { BeginInvoke((MethodInvoker)Connect); };
             }
@@ -343,7 +343,7 @@ namespace NodeChat
             int port;
             if (!int.TryParse(portText, out port) || port <= 0 || port > 65535) { Fail("端口需为 1~65535", portField); return; }
             if (!NameRe.IsMatch(user)) { Fail("用户名 1~24 位，仅支持字母/数字/下划线/中文/点/横线", userField); return; }
-            if (pass.Length == 0) { Fail("请填写密码", passField); return; }
+            // 密码可选：服务端没开 requirePassword 时留空即可登录
 
             busy = true;
             messageLabel.ForeColor = Theme.Muted;
