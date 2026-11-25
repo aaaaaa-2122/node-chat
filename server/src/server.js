@@ -840,6 +840,7 @@ function parseArgs(argv) {
     else if (a === '--demo') out.demo = true;
     else if (a === '--no-stdin') out.noStdin = true;
     else if (a === '--require-secure') out.requireSecure = true;
+    else if (a === '--allow-plaintext') out.requireSecure = false;
     else if (a === '--no-email-verify') out.requireEmailVerify = false;
     else if (a === '--smtp-host') out.smtpHost = argv[++i];
     else if (a === '--smtp-port') out.smtpPort = Number(argv[++i]);
@@ -857,7 +858,8 @@ function parseArgs(argv) {
   --name <name>     服务端名称（默认 node-chat-server）
   --demo            创建演示账号 alice/bob/carol（密码 123456）与 general/dev 群
   --no-stdin        不监听标准输入广播
-  --require-secure  只接受加密连接（默认 false：明文客户端照常可用）
+  --require-secure  只接受加密连接（1.1.0 起默认开启，此参数保留兼容写法）
+  --allow-plaintext 允许明文连接（放弃强制加密，仅内网调试用）
   --no-email-verify 关闭邮箱验证登录（默认开启：注册需邮箱验证码）
   --smtp-host <h>   SMTP 服务器地址（发验证码邮件；缺省则验证码打到日志降级）
   --smtp-port <p>   SMTP 端口（默认 465）
