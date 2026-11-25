@@ -32,7 +32,7 @@ public class LocalChatClient {
     private StateListener stateListener;
     private Thread readerThread;
 
-    public void connect(String host, int port, String username, String password,
+    public void connectRaw(String host, int port,
                         FrameListener frameListener, StateListener stateListener) throws IOException {
         this.frameListener = frameListener;
         this.stateListener = stateListener;
@@ -56,16 +56,19 @@ public class LocalChatClient {
         readerThread.setDaemon(true);
         readerThread.start();
 
-        // 登录
-        Map<String, Object> data = Json.obj();
-        data.put("username", username);
-        data.put("password", password);
-        send(Protocol.frame(Protocol.C2S_AUTH, data, "auth-1"));
-
         if (stateListener != null) stateListener.onStateChanged(true, null);
     }
 
     /** 强制加密：连接后同步握手（读线程尚未启动） */
+    /** 连接并认证（普通登录） */
+    public void connect(String host, int port, String username, String password,
+                        FrameListener frameListener, StateListener stateListener) throws IOException {
+        connectRaw(host, port, frameListener, stateListener);
+        Map<String, Object> data = Json.obj();
+        data.put("username", username);
+        data.put("password", password);
+        send(Protocol.frame(Protocol.C2S_AUTH, data, "auth-1"));
+    }
     private void secureHandshake() throws Exception {
         Secure.Key key = Secure.generateX25519();
         java.util.Map<String, Object> d = Json.obj();

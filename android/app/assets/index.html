@@ -52,6 +52,24 @@
                autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false">
       </label>
 
+      <label class="field">
+        <span>邮箱（注册 / 验证用，登录可留空）</span>
+        <input id="email" type="email" placeholder="you@example.com" maxlength="254"
+               autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false">
+      </label>
+
+      <div id="verifyBox" class="verify-box" style="display:none">
+        <label class="field">
+          <span>邮箱验证码（6 位）</span>
+          <input id="verifyCode" inputmode="numeric" maxlength="6" placeholder="123456">
+        </label>
+        <div class="row">
+          <button id="btnVerify" class="primary grow">验证</button>
+          <button id="btnResend" class="grow">重发</button>
+        </div>
+      </div>
+
+      <button id="btnRegister" class="big">注　册（发验证码）</button>
       <label class="remember">
         <input type="checkbox" id="remember" checked>
         <i></i>

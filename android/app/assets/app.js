@@ -17,12 +17,12 @@
 
   // ------------------------------------------------------------ 协议
   var C2S = {
-    AUTH: 'auth', MSG: 'msg', GROUP: 'group', JOIN: 'join', LEAVE: 'leave',
+    AUTH: 'auth', REGISTER: 'register', VERIFY_EMAIL: 'verify_email', RESEND_CODE: 'resend_code', MSG: 'msg', GROUP: 'group', JOIN: 'join', LEAVE: 'leave',
     ROOMS: 'rooms', MEMBERS: 'members', WHO: 'who', HISTORY: 'history',
     PROFILE: 'profile', PING: 'ping'
   };
   var S2C = {
-    AUTH_OK: 'auth_ok', AUTH_ERR: 'auth_err', MSG: 'msg', GROUP: 'group',
+    AUTH_OK: 'auth_ok', AUTH_ERR: 'auth_err', REGISTER_OK: 'register_ok', REGISTER_ERR: 'register_err', VERIFY_OK: 'verify_ok', VERIFY_ERR: 'verify_err', MSG: 'msg', GROUP: 'group',
     JOIN_OK: 'join_ok', LEAVE_OK: 'leave_ok', ROOMS: 'rooms', MEMBERS: 'members',
     WHO: 'who', HISTORY: 'history', PROFILE: 'profile', ACK: 'ack', ERROR: 'error',
     PONG: 'pong', SYSTEM: 'system', PRESENCE: 'presence'
@@ -106,7 +106,7 @@
         var p = this.pending[id];
         delete this.pending[id];
         clearTimeout(p.timer);
-        if (frame.type === S2C.ERROR) {
+        if (frame.type === S2C.ERROR || frame.type === S2C.REGISTER_ERR || frame.type === S2C.VERIFY_ERR) {
           p.reject(new Error((frame.data && frame.data.message) || '服务端返回错误'));
         } else {
           p.resolve(frame.data || {});
@@ -308,6 +308,57 @@
     }
   }
 
+  // ---- 邮箱验证登录 ----
+  function loginFields() {
+    var host = $('host').value.trim(), port = $('port').value.trim();
+    if (host.indexOf(':') > 0 && host.indexOf('://') < 0) {
+      var i = host.lastIndexOf(':'), pp = host.slice(i + 1);
+      if (/^\d+$/.test(pp)) { port = pp; host = host.slice(0, i); }
+    }
+    return { host: host, port: port, user: $('username').value.trim(), pass: $('password').value, email: $('email').value.trim() };
+  }
+  function ensureRawConnection(host, port) {
+    return new Promise(function (resolve, reject) {
+      if (!BRIDGE || !BRIDGE.connectForAuth) { reject(new Error('当前环境不支持邮箱注册')); return; }
+      if (BRIDGE.isConnected && BRIDGE.isConnected()) { resolve(); return; }
+      BRIDGE.connectForAuth(host, port);
+      var tries = 0;
+      var t = setInterval(function () {
+        tries++;
+        if (BRIDGE.isConnected && BRIDGE.isConnected()) { clearInterval(t); resolve(); }
+        else if (tries > 40) { clearInterval(t); reject(new Error('连接服务端超时')); }
+      }, 150);
+    });
+  }
+  $('btnRegister').onclick = async function () {
+    var f = loginFields();
+    if (!f.user || !/^[A-Za-z0-9_\u4e00-\u9fa5.\-]{1,24}$/.test(f.user)) { setLoginMsg('请填写正确的用户名', false); return; }
+    if (!f.pass) { setLoginMsg('请填写密码', false); return; }
+    if (!f.email || f.email.indexOf('@') < 0) { setLoginMsg('请填写邮箱', false); return; }
+    setLoginMsg('正在发送验证码…', true);
+    try {
+      await ensureRawConnection(f.host, f.port);
+      await client.request(C2S.REGISTER, { username: f.user, password: f.pass, email: f.email });
+      $('verifyBox').style.display = '';
+      setLoginMsg('验证码已发到邮箱，请查收后输入并点「验证」', true);
+    } catch (e) { setLoginMsg(e.message || '注册失败', false); }
+  };
+  $('btnVerify').onclick = async function () {
+    var f = loginFields(), code = $('verifyCode').value.trim();
+    if (!/^\d{6}$/.test(code)) { setLoginMsg('请输入 6 位验证码', false); return; }
+    setLoginMsg('正在验证…', true);
+    try {
+      await client.request(C2S.VERIFY_EMAIL, { username: f.user, code: code });
+      setLoginMsg('验证通过，正在登录…', true);
+      $('verifyBox').style.display = 'none';
+      BRIDGE.connect(f.host, f.port, f.user, f.pass);
+    } catch (e) { setLoginMsg(e.message || '验证失败', false); }
+  };
+  $('btnResend').onclick = async function () {
+    var f = loginFields();
+    try { await client.request(C2S.RESEND_CODE, { username: f.user }); setLoginMsg('验证码已重发', true); }
+    catch (e) { setLoginMsg(e.message || '重发失败', false); }
+  };
   $('btnConnect').onclick = function () {
     if (!BRIDGE) { setLoginMsg('当前环境缺少 AndroidBridge，请用 App 打开', false); return; }
     var host = $('host').value.trim();

@@ -162,6 +162,32 @@ public class MainActivity extends Activity {
             }, "chat-bridge-connect").start();
         }
 
+        /** 仅连接不认证（注册/邮箱验证流程用） */
+        @JavascriptInterface
+        public void connectForAuth(String host, String port) {
+            String targetHost = host == null || host.trim().isEmpty() ? "127.0.0.1" : host.trim();
+            int targetPort;
+            if (port == null || port.trim().isEmpty()) {
+                targetPort = server != null ? server.getPort() : ChatServerCore.DEFAULT_PORT;
+            } else {
+                try { targetPort = Integer.parseInt(port.trim()); }
+                catch (NumberFormatException e) { targetPort = server != null ? server.getPort() : ChatServerCore.DEFAULT_PORT; }
+            }
+            final String h = targetHost; final int pp = targetPort;
+            new Thread(new Runnable() {
+                @Override public void run() {
+                    try {
+                        if (client != null) client.close();
+                        client = new LocalChatClient();
+                        client.connectRaw(h, pp, new LocalChatClient.FrameListener() {
+                            @Override public void onFrame(String rawJson) { pushFrame(rawJson); }
+                        }, new LocalChatClient.StateListener() {
+                            @Override public void onStateChanged(boolean connected, String error) { pushStatus(connected, error); }
+                        });
+                    } catch (Exception e) { pushStatus(false, "连接失败: " + e.getMessage()); }
+                }
+            }, "chat-bridge-raw").start();
+        }
         /** 发送一帧原始 JSON */
         @JavascriptInterface
         public void send(String rawJson) {
