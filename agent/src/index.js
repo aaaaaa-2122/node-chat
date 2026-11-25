@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * 轻量聊天 agent —— 三个能力（零第三方依赖，作为 node-chat 的插件模块）：
+ * 轻量聊天 agent —— 三个能力（复用仓库内 agentbus/mailer，作为 node-chat 的插件模块）：
  *   1. watch  — 挂 watchdog 监听群聊（收到 @ 唤醒）
  *   2. speak  — 按预设人格 + 群聊上下文，调 LLM 生成回复并发到群里
  *   3. mail   — 用与邮箱验证码相同的 SMTP 配置，发邮件给指定用户
