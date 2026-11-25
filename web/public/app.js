@@ -10,9 +10,7 @@
 (function () {
   const $ = (sel) => document.querySelector(sel);
   const MAX_TEXT = 4000;
-  const MAX_IMAGE_CHARS = 580000; // 服务端图片上限 600000，留点余量
-  const MAX_MEDIA_CHARS = 1100000; // GIF/动画上限 1200000，留点余量
-  const MAX_VIDEO_CHARS = 1900000; // 短视频上限 2000000，留点余量
+  const MAX_AVATAR_CHARS = 95000; // 服务端头像上限 100000，留点余量
 
   const state = {
     ws: null,
@@ -34,8 +32,7 @@
     retry: 0,
     retryTimer: null,
     manualClose: false,
-    attachImage: null,
-    attachVideo: null,
+    attachFile: null, // { url, name, size, mime }
     lastDay: '',
   };
 
@@ -120,6 +117,107 @@
     if (dayOf(ts) === dayOf(today.getTime())) return '今天';
     if (dayOf(ts) === dayOf(yest.getTime())) return '昨天';
     return d.getMonth() + 1 + '月' + d.getDate() + '日';
+  }
+
+  // ---------------------------------------------------------------- @ 提及
+  const MENTION_RE = /@([A-Za-z0-9_\u4e00-\u9fa5.-]{1,24})/g;
+
+  /** 从文本里抽出 @用户名（去重，最多 32 个） */
+  function parseMentions(text) {
+    const out = [];
+    if (!text) return out;
+    MENTION_RE.lastIndex = 0;
+    let m;
+    while ((m = MENTION_RE.exec(text))) {
+      const name = m[1].replace(/[.-]+$/, '');
+      if (name && name !== state.user && !out.includes(name)) out.push(name);
+      if (out.length >= 32) break;
+    }
+    return out;
+  }
+
+  /** 把文本里的 @xxx 渲染成高亮片段（不用 innerHTML，避免注入） */
+  function renderText(el, text, mentions) {
+    const names = mentions && mentions.length ? mentions : parseMentions(text);
+    if (!names.length) {
+      el.textContent = text;
+      return;
+    }
+    const set = new Set(names);
+    MENTION_RE.lastIndex = 0;
+    let last = 0;
+    let m;
+    while ((m = MENTION_RE.exec(text))) {
+      const name = m[1].replace(/[.-]+$/, '');
+      if (!set.has(name)) continue;
+      if (m.index > last) el.appendChild(document.createTextNode(text.slice(last, m.index)));
+      const at = document.createElement('span');
+      at.className = 'mention';
+      at.textContent = '@' + name;
+      el.appendChild(at);
+      const tail = m[0].slice(1 + name.length); // 被正则吃进去的句读，补回去
+      if (tail) el.appendChild(document.createTextNode(tail));
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) el.appendChild(document.createTextNode(text.slice(last)));
+  }
+
+  /** 在输入框光标处插入 @某人 */
+  function insertMention(name) {
+    const box = $('#input');
+    if (!box || box.disabled) return;
+    const token = '@' + name + ' ';
+    const start = box.selectionStart == null ? box.value.length : box.selectionStart;
+    const end = box.selectionEnd == null ? start : box.selectionEnd;
+    const before = box.value.slice(0, start);
+    const needSpace = before && !/\s$/.test(before);
+    box.value = before + (needSpace ? ' ' : '') + token + box.value.slice(end);
+    const pos = box.value.length - box.value.slice(end).length;
+    box.setSelectionRange(pos, pos);
+    autoGrow(box);
+    box.focus();
+  }
+
+  // ---------------------------------------------------------------- 文件
+  function fmtSize(n) {
+    if (typeof n !== 'number' || !isFinite(n) || n < 0) return '';
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
+    return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+  }
+
+  function extOf(name) {
+    const m = /\.([A-Za-z0-9]{1,12})$/.exec(String(name || ''));
+    return m ? m[1].toLowerCase() : '';
+  }
+
+  const FILE_ICONS = {
+    png: '🖼', jpg: '🖼', jpeg: '🖼', gif: '🖼', webp: '🖼', bmp: '🖼', svg: '🖼', avif: '🖼',
+    mp4: '🎬', mov: '🎬', mkv: '🎬', webm: '🎬', avi: '🎬', flv: '🎬', m4v: '🎬',
+    mp3: '🎵', wav: '🎵', flac: '🎵', aac: '🎵', ogg: '🎵', m4a: '🎵',
+    pdf: '📕', doc: '📝', docx: '📝', rtf: '📝', txt: '📃', md: '📃', log: '📃',
+    xls: '📊', xlsx: '📊', csv: '📊', ppt: '📽', pptx: '📽',
+    zip: '🗜', rar: '🗜', '7z': '🗜', tar: '🗜', gz: '🗜', bz2: '🗜', xz: '🗜',
+    exe: '⚙️', msi: '⚙️', apk: '📦', dmg: '📦', iso: '💽', deb: '📦', rpm: '📦',
+    js: '💻', ts: '💻', py: '💻', java: '💻', c: '💻', cpp: '💻', cs: '💻', go: '💻', rs: '💻',
+    json: '🧾', xml: '🧾', html: '🧾', css: '🧾', yml: '🧾', yaml: '🧾', sh: '💻',
+  };
+
+  function iconOfFile(name, mime) {
+    const ext = extOf(name);
+    if (FILE_ICONS[ext]) return FILE_ICONS[ext];
+    const t = String(mime || '');
+    if (t.startsWith('image/')) return '🖼';
+    if (t.startsWith('video/')) return '🎬';
+    if (t.startsWith('audio/')) return '🎵';
+    if (t.startsWith('text/')) return '📃';
+    return '📄';
+  }
+
+  function isImageFile(name, mime) {
+    if (String(mime || '').startsWith('image/')) return true;
+    return ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif'].includes(extOf(name));
   }
 
   function toast(text, ms) {
@@ -490,7 +588,8 @@
     // 带图/带视频的消息不合并——媒体气泡和文字气泡贴在一起会糊成一坨
     const grouped =
       !dayChanged && prev && prev.from === m.from && (m.ts || 0) - prev.ts < 180000 &&
-      !m.image && !m.video && !m.videoUrl && !prev.img && !prev.video && !prev.videoUrl;
+      !m.image && !m.video && !m.videoUrl && !m.file &&
+      !prev.img && !prev.video && !prev.videoUrl && !prev.file;
 
     if (grouped && prev.timeEl) prev.timeEl.remove();
     state.msgIds.add(m.id);
@@ -509,12 +608,15 @@
     }
 
     const mine = m.from === state.user;
+    const atMe = !mine && Array.isArray(m.mentions) && m.mentions.includes(state.user);
     const row = document.createElement('div');
-    row.className = 'msg' + (mine ? ' mine' : '') + (grouped ? ' cont' : '');
+    row.className = 'msg' + (mine ? ' mine' : '') + (grouped ? ' cont' : '') + (atMe ? ' at-me' : '');
 
     const av = document.createElement('div');
     av.className = 'msg-avatar';
     paintAvatar(av, m.from);
+    av.title = m.from + '（右键 / 长按 @ 他）';
+    bindMention(av, m.from);
 
     const main = document.createElement('div');
     main.className = 'msg-main';
@@ -533,8 +635,11 @@
     if (m.text) {
       const t = document.createElement('div');
       t.className = 'txt';
-      t.textContent = m.text;
+      renderText(t, m.text, m.mentions);
       bubble.appendChild(t);
+    }
+    if (m.file) {
+      bubble.appendChild(fileCard(m.file));
     }
     if (m.image) {
       const img = document.createElement('img');
@@ -569,7 +674,14 @@
     row.appendChild(main);
     box.appendChild(row);
 
-    state.lastRow = { from: m.from, ts: m.ts || 0, timeEl: time, img: !!m.image, video: !!(m.video || m.videoUrl) };
+    state.lastRow = {
+      from: m.from,
+      ts: m.ts || 0,
+      timeEl: time,
+      img: !!m.image,
+      video: !!(m.video || m.videoUrl),
+      file: !!m.file,
+    };
 
     if (!quiet) scrollBottom();
   }
@@ -615,6 +727,78 @@
     box.appendChild(v);
     box.addEventListener('click', () => box.remove());
     document.body.appendChild(box);
+  }
+
+  /** 文件消息：图片给缩略图，其余给「图标 + 文件名 + 大小」卡片，点击即下载 */
+  function fileCard(f) {
+    const wrap = document.createElement('div');
+    const url = String(f.url || '');
+    const name = String(f.name || '文件');
+    const sizeText = fmtSize(f.size);
+
+    if (isImageFile(name, f.mime)) {
+      const img = document.createElement('img');
+      img.className = 'file-thumb';
+      img.src = url;
+      img.alt = name;
+      img.loading = 'lazy';
+      img.addEventListener('click', () => showLightbox(url));
+      wrap.appendChild(img);
+    }
+
+    const a = document.createElement('a');
+    a.className = 'file-card';
+    a.href = url;
+    a.download = name;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.title = '下载 ' + name;
+
+    const ico = document.createElement('span');
+    ico.className = 'file-card-ico';
+    ico.textContent = iconOfFile(name, f.mime);
+    a.appendChild(ico);
+
+    const body = document.createElement('span');
+    body.className = 'file-card-body';
+    const nm = document.createElement('span');
+    nm.className = 'file-card-name';
+    nm.textContent = name;
+    body.appendChild(nm);
+    const meta = document.createElement('span');
+    meta.className = 'file-card-meta';
+    meta.textContent = (sizeText ? sizeText + ' · ' : '') + '点击下载';
+    body.appendChild(meta);
+    a.appendChild(body);
+
+    wrap.appendChild(a);
+    return wrap;
+  }
+
+  /** 右键（桌面）/ 长按（手机）头像 → 插入 @某人 */
+  function bindMention(el, name) {
+    if (!name || name === state.user) return;
+    el.addEventListener('contextmenu', (ev) => {
+      ev.preventDefault();
+      insertMention(name);
+    });
+    let timer = null;
+    const clear = () => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+    };
+    el.addEventListener('touchstart', () => {
+      clear();
+      timer = setTimeout(() => {
+        timer = null;
+        insertMention(name);
+        if (navigator.vibrate) navigator.vibrate(12);
+      }, 500);
+    }, { passive: true });
+    el.addEventListener('touchend', clear);
+    el.addEventListener('touchmove', clear);
+    el.addEventListener('touchcancel', clear);
+    el.style.touchAction = 'manipulation';
   }
 
   // ================================================================ 侧栏渲染
@@ -774,6 +958,18 @@
       st.textContent = online ? '在线' : '离线';
       btn.appendChild(st);
 
+      if (kind === 'room' && name !== state.user) {
+        const at = document.createElement('span');
+        at.className = 'member-at';
+        at.textContent = '@';
+        at.title = '在输入框里 @ ' + name;
+        at.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          insertMention(name);
+        });
+        btn.appendChild(at);
+      }
+
       if (name !== state.user) {
         btn.addEventListener('click', () => openConv('dm', name));
       } else {
@@ -827,9 +1023,8 @@
   async function sendMessage() {
     const box = $('#input');
     const text = box.value.trim();
-    const image = state.attachImage;
-    const video = state.attachVideo; // { url, name, size } 或旧的 data URL
-    if (!text && !image && !video) return;
+    const file = state.attachFile; // { url, name, size, mime }
+    if (!text && !file) return;
     if (!state.conv) {
       toast('先选一个会话');
       return;
@@ -840,14 +1035,9 @@
     }
 
     const payload = { text: text || '' };
-    if (image) payload.image = image;
-    if (video) {
-      if (typeof video === 'object' && video.url) {
-        payload.videoUrl = video.url;
-      } else {
-        payload.video = video; // 兼容旧的 data URL
-      }
-    }
+    if (file) payload.file = { url: file.url, name: file.name, size: file.size, mime: file.mime };
+    const mentions = parseMentions(text);
+    if (mentions.length) payload.mentions = mentions;
 
     box.value = '';
     autoGrow(box);
@@ -870,13 +1060,9 @@
     } catch (e) {
       box.value = text;
       autoGrow(box);
-      if (image) {
-        state.attachImage = image;
-        showAttach(image);
-      }
-      if (video) {
-        state.attachVideo = video;
-        showVideoAttach(video);
+      if (file) {
+        state.attachFile = file;
+        showFileAttach(file);
       }
       toast(e.message || '发送失败');
     } finally {
@@ -890,43 +1076,25 @@
     el.style.height = Math.min(el.scrollHeight, 140) + 'px';
   }
 
-  // ================================================================ 图片 / GIF / 视频
-  function showAttach(dataUrl) {
-    $('#attachImg').src = dataUrl;
-    $('#attachImg').hidden = false;
-    $('#attachVideo').hidden = true;
-    $('#attach').hidden = false;
-  }
-
-  function showVideoAttach(dataUrl) {
-    $('#attachVideo').src = dataUrl;
-    $('#attachVideo').hidden = false;
-    $('#attachImg').hidden = true;
+  // ================================================================ 通用文件 / 头像
+  function showFileAttach(f) {
+    $('#attachIco').textContent = iconOfFile(f.name, f.mime);
+    $('#attachName').textContent = f.name;
+    $('#attachSize').textContent = fmtSize(f.size) || '已上传';
     $('#attach').hidden = false;
   }
 
   function clearAttach() {
-    state.attachImage = null;
-    state.attachVideo = null;
+    state.attachFile = null;
     $('#attach').hidden = true;
-    $('#attachImg').removeAttribute('src');
-    $('#attachVideo').removeAttribute('src');
-    $('#fileImage').value = '';
-    $('#fileVideo').value = '';
+    $('#attachName').textContent = '';
+    $('#attachSize').textContent = '';
+    const inp = $('#fileAny');
+    if (inp) inp.value = '';
   }
 
-  /** 读取本地文件为 data URL（保持原始编码，适合 GIF/视频这类不能重编码的） */
-  function fileToDataUrl(file) {
-    return new Promise((resolve, reject) => {
-      const fr = new FileReader();
-      fr.onload = () => resolve(String(fr.result));
-      fr.onerror = () => reject(new Error('文件读不出来'));
-      fr.readAsDataURL(file);
-    });
-  }
-
-  /** 按最长边缩放并用 JPEG 压缩，直到体积小于上限 */
-  function compress(file, maxSide, startQuality) {
+  /** 按最长边缩放并用 JPEG 压缩，直到体积小于上限（头像用） */
+  function compress(file, maxSide, startQuality, maxChars) {
     return new Promise((resolve, reject) => {
       const url = URL.createObjectURL(file);
       const img = new Image();
@@ -946,7 +1114,7 @@
           ctx.fillRect(0, 0, w, h);
           ctx.drawImage(img, 0, 0, w, h);
           const dataUrl = canvas.toDataURL('image/jpeg', quality);
-          if (dataUrl.length <= MAX_IMAGE_CHARS) return resolve(dataUrl);
+          if (dataUrl.length <= maxChars) return resolve(dataUrl);
           if (quality > 0.45) {
             quality -= 0.12;
             return draw();
@@ -968,63 +1136,75 @@
     });
   }
 
-  async function pickImage(file) {
-    if (!file) return;
-    try {
-      let dataUrl;
-      if (file.type === 'image/gif') {
-        // GIF 走原样内联，保持动画（重编码会变成静态 JPEG）
-        dataUrl = await fileToDataUrl(file);
-        if (dataUrl.length > MAX_MEDIA_CHARS) {
-          toast('这张动图太大（上限约 1.1MB），换一个小点的吧');
-          return;
-        }
-      } else {
-        dataUrl = await compress(file, 1280, 0.82);
-      }
-      state.attachImage = dataUrl;
-      showAttach(dataUrl);
-      $('#input').focus();
-    } catch (e) {
-      toast(e.message);
-    }
-  }
-
-    /** 分块上传视频/动图到网关，返回 { url, size, name } */
+  /** 分块上传任意文件到网关，返回 { url, size, name, mime } */
   async function uploadFile(file) {
     const CHUNK = 4 * 1024 * 1024; // 与网关 MAX_CHUNK_SIZE 一致
     const total = Math.max(1, Math.ceil(file.size / CHUNK));
     const qname = encodeURIComponent(file.name);
+    const mime = encodeURIComponent(file.type || '');
+    // 本次上传的稳定 id（同一个文件的分块必须一致；也避免同名文件互相覆盖）
+    const uploadId = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10)).replace(
+      /[^A-Za-z0-9]/g,
+      ''
+    );
     let finalUrl = null;
-    let lastTotal = total;
     for (let i = 0; i < total; i++) {
       const blob = file.slice(i * CHUNK, Math.min(file.size, (i + 1) * CHUNK));
-      const res = await fetch('/upload?name=' + qname + '&chunk=' + i + '&total=' + total, {
+      const url =
+        '/upload?name=' + qname + '&mime=' + mime + '&uploadId=' + uploadId +
+        '&chunk=' + i + '&total=' + total;
+      const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/octet-stream' },
         body: blob,
       });
       const json = await res.json().catch(() => null);
       if (!res.ok || !json || json.ok === false) {
-        throw new Error((json && json.message) || ('上传失败 chunk ' + (i + 1)));
+        throw new Error((json && json.message) || ('上传失败（第 ' + (i + 1) + '/' + total + ' 块）'));
       }
-      lastTotal = json.total || total;
       if (json.url) finalUrl = json.url; // 最后一块返回完成 URL
     }
     if (!finalUrl) throw new Error('上传未完成');
-    return { url: finalUrl, size: file.size, name: file.name };
+    return { url: finalUrl, size: file.size, name: file.name, mime: file.type || '' };
   }
 
-  async function pickVideo(file) {
+  async function pickFile(file) {
     if (!file) return;
+    if (file.size === 0) {
+      toast('空文件就不用发了');
+      return;
+    }
+    const tip = '正在上传 ' + file.name + '（' + fmtSize(file.size) + '）…';
+    toast(tip, 60000);
     try {
-      toast('正在上传视频…');
       const up = await uploadFile(file);
-      state.attachVideo = up; // { url, size, name }
-      showVideoAttach(up.url);
+      state.attachFile = up;
+      showFileAttach(up);
+      toast('已就绪，按发送即可');
       $('#input').focus();
     } catch (e) {
       toast(e.message || '上传失败');
+    }
+  }
+
+  async function pickAvatar(file) {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      toast('头像得是图片');
+      return;
+    }
+    try {
+      const dataUrl = await compress(file, 160, 0.8, MAX_AVATAR_CHARS);
+      const d = await request('profile', { action: 'set', avatar: dataUrl });
+      const av = d.avatar || dataUrl;
+      state.avatar = av;
+      state.avatars[state.user] = av;
+      paintAvatar($('#meAvatar'), state.user);
+      renderMembers();
+      renderSidebar();
+      toast('头像已更新');
+    } catch (e) {
+      toast(e.message || '头像上传失败');
     }
   }
 
@@ -1051,8 +1231,8 @@
     const p = $('#inputPass').value;
     const err = $('#loginErr');
     err.textContent = '';
-    if (!u || !p) {
-      err.textContent = '用户名和密码都要填';
+    if (!u) {
+      err.textContent = '请填个用户名';
       return;
     }
     $('#btnLogin').disabled = true;
@@ -1084,16 +1264,18 @@
   });
   input.addEventListener('input', () => autoGrow(input));
 
-  $('#btnImage').addEventListener('click', () => $('#fileImage').click());
-  $('#fileImage').addEventListener('change', (ev) => pickImage(ev.target.files[0]));
-  $('#btnVideo').addEventListener('click', () => $('#fileVideo').click());
-  $('#fileVideo').addEventListener('change', (ev) => pickVideo(ev.target.files[0]));
+  $('#btnFile').addEventListener('click', () => $('#fileAny').click());
+  $('#fileAny').addEventListener('change', (ev) => {
+    const f = ev.target.files && ev.target.files[0];
+    ev.target.value = ''; // 允许再选同一个文件
+    pickFile(f);
+  });
   $('#btnAttachClear').addEventListener('click', clearAttach);
 
   $('#meAvatar').addEventListener('click', () => $('#fileAvatar').click());
   $('#fileAvatar').addEventListener('change', (ev) => pickAvatar(ev.target.files[0]));
 
-  // 拖拽发图
+  // 拖拽发文件（任意类型）
   document.addEventListener('dragover', (ev) => {
     if (state.authed) ev.preventDefault();
   });
@@ -1101,8 +1283,7 @@
     if (!state.authed) return;
     ev.preventDefault();
     const f = ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0];
-    if (f && f.type.startsWith('image/')) pickImage(f);
-    else if (f && f.type.startsWith('video/')) pickVideo(f);
+    if (f) pickFile(f);
   });
 
   $('#btnNewRoom').addEventListener('click', async () => {

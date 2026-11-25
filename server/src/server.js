@@ -61,6 +61,8 @@ class ChatServer {
     this.demo = options.demo || false;
     /** 只接受加密连接（默认 false：明文照常可用，兼容旧客户端） */
     this.requireSecure = options.requireSecure === undefined ? false : !!options.requireSecure;
+    /** 是否强制密码登录（默认 false：局域网场景留空密码即可登录） */
+    this.requirePassword = options.requirePassword === undefined ? false : !!options.requirePassword;
     this.store = new Store(this.dataDir);
     /** 服务端长期身份（Ed25519），启动时加载或生成 */
     this.identity = null;
@@ -316,21 +318,29 @@ class ChatServer {
 
   _handleAuth(session, data, id) {
     const username = data.username;
-    const password = data.password;
+    const password = typeof data.password === 'string' ? data.password : '';
 
-    if (!P.isValidUsername(username) || typeof password !== 'string' || !password) {
-      return this._authFail(session, '用户名或密码格式不正确', id);
+    if (!P.isValidUsername(username)) {
+      return this._authFail(session, '用户名格式不正确', id);
     }
-    // 先校验密码，再判断是否重复登录，避免用错误密码探测在线状态
-    if (this.store.hasUser(username) && !this.store.verifyUser(username, password)) {
-      return this._authFail(session, '密码错误', id);
+    // 密码可选：服务端 requirePassword 开启时必填，否则留空即可登录
+    if (this.requirePassword && !password) {
+      return this._authFail(session, '本服务端要求填写密码', id);
+    }
+    // 已存在账号：带密码账号校验口令；无密码账号只接受空口令
+    if (this.store.hasUser(username)) {
+      if (this.store.isPasswordless(username)) {
+        if (password) return this._authFail(session, '该账号无需密码', id);
+      } else if (!this.store.verifyUser(username, password)) {
+        return this._authFail(session, '密码错误', id);
+      }
     }
     if (this.sessions.has(username)) {
       return this._authFail(session, `用户 ${username} 已在别处登录`, id);
     }
     if (!this.store.hasUser(username)) {
-      // 首次登录自动注册，方便快速体验
-      this.store.createUser(username, password);
+      // 首次登录自动注册：留空密码则注册为无密码账号
+      this.store.createUser(username, password, !password);
     }
 
     session.user = username;
@@ -377,10 +387,15 @@ class ChatServer {
     const image = data.image === undefined || data.image === null ? null : data.image;
     const video = data.video === undefined || data.video === null ? null : data.video;
     const videoUrl = data.videoUrl === undefined || data.videoUrl === null ? null : data.videoUrl;
+    // 通用文件（新）：file 对象，兼容 fileUrl 字符串别名
+    const file = data.file === undefined || data.file === null
+      ? (typeof data.fileUrl === 'string' ? { url: data.fileUrl, name: data.fileName || 'file', size: 0 } : null)
+      : data.file;
+    const mentions = Array.isArray(data.mentions) ? data.mentions : null;
     if (!P.isValidUsername(to)) {
       return this._error(session, ERR.BAD_REQUEST, '收件人用户名非法', id);
     }
-    if (!P.isValidText(text) && !image && !video && !videoUrl) {
+    if (!P.isValidText(text) && !image && !video && !videoUrl && !file) {
       return this._error(session, ERR.BAD_REQUEST, `消息内容长度需在 1~${LIMITS.MAX_TEXT} 之间`, id);
     }
     if (image && !P.isValidImageDataUrl(image) && !P.isValidGifDataUrl(image)) {
@@ -391,6 +406,12 @@ class ChatServer {
     }
     if (videoUrl && !P.isValidVideoUrl(videoUrl)) {
       return this._error(session, ERR.BAD_REQUEST, '视频地址非法或超过大小限制', id);
+    }
+    if (file && !P.isValidFileAttachment(file)) {
+      return this._error(session, ERR.BAD_REQUEST, '文件引用格式非法', id);
+    }
+    if (mentions && !P.isValidMentions(mentions)) {
+      return this._error(session, ERR.BAD_REQUEST, '@成员列表非法', id);
     }
     if (to === session.user) {
       return this._error(session, ERR.BAD_REQUEST, '不能给自己发私聊', id);
@@ -406,6 +427,8 @@ class ChatServer {
     if (image) message.image = image;
     if (video) message.video = video;
     if (videoUrl) message.videoUrl = videoUrl;
+    if (file) message.file = file;
+    if (mentions) message.mentions = mentions;
     this.store.appendDm(session.user, to, message);
 
     const target = this.sessions.get(to);
@@ -430,10 +453,14 @@ class ChatServer {
     const image = data.image === undefined || data.image === null ? null : data.image;
     const video = data.video === undefined || data.video === null ? null : data.video;
     const videoUrl = data.videoUrl === undefined || data.videoUrl === null ? null : data.videoUrl;
+    const file = data.file === undefined || data.file === null
+      ? (typeof data.fileUrl === 'string' ? { url: data.fileUrl, name: data.fileName || 'file', size: 0 } : null)
+      : data.file;
+    const mentions = Array.isArray(data.mentions) ? data.mentions : null;
     if (!P.isValidRoomName(room)) {
       return this._error(session, ERR.BAD_REQUEST, '群名称非法', id);
     }
-    if (!P.isValidText(text) && !image && !video && !videoUrl) {
+    if (!P.isValidText(text) && !image && !video && !videoUrl && !file) {
       return this._error(session, ERR.BAD_REQUEST, `消息内容长度需在 1~${LIMITS.MAX_TEXT} 之间`, id);
     }
     if (image && !P.isValidImageDataUrl(image) && !P.isValidGifDataUrl(image)) {
@@ -444,6 +471,12 @@ class ChatServer {
     }
     if (videoUrl && !P.isValidVideoUrl(videoUrl)) {
       return this._error(session, ERR.BAD_REQUEST, '视频地址非法或超过大小限制', id);
+    }
+    if (file && !P.isValidFileAttachment(file)) {
+      return this._error(session, ERR.BAD_REQUEST, '文件引用格式非法', id);
+    }
+    if (mentions && !P.isValidMentions(mentions)) {
+      return this._error(session, ERR.BAD_REQUEST, '@成员列表非法', id);
     }
     if (!this.store.isMember(room, session.user)) {
       return this._error(session, ERR.NOT_IN_ROOM, `你还不是群「${room}」的成员，请先 join`, id);
@@ -459,6 +492,8 @@ class ChatServer {
     if (image) message.image = image;
     if (video) message.video = video;
     if (videoUrl) message.videoUrl = videoUrl;
+    if (file) message.file = file;
+    if (mentions) message.mentions = mentions;
     this.store.appendRoomMessage(room, message);
 
     // 广播给群内所有在线成员
@@ -635,6 +670,7 @@ if (require.main === module) {
     serverName: args.name,
     demo: args.demo,
     requireSecure: args.requireSecure,
+    requirePassword: args.requirePassword,
   });
 
   server
@@ -694,6 +730,7 @@ function parseArgs(argv) {
     else if (a === '--demo') out.demo = true;
     else if (a === '--no-stdin') out.noStdin = true;
     else if (a === '--require-secure') out.requireSecure = true;
+    else if (a === '--require-password') out.requirePassword = true;
     else if (a === '--help' || a === '-h') {
       console.log(`用法: node src/server.js [选项]
 
@@ -705,6 +742,7 @@ function parseArgs(argv) {
   --demo            创建演示账号 alice/bob/carol（密码 123456）与 general/dev 群
   --no-stdin        不监听标准输入广播
   --require-secure  只接受加密连接（默认 false：明文客户端照常可用）
+  --require-password  强制密码登录（默认 false：局域网场景可留空密码）
   -h, --help        显示帮助`);
       process.exit(0);
     }

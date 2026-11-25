@@ -26,8 +26,8 @@
         <input id="inputUser" name="username" maxlength="24" required placeholder="首次登录自动注册" autocapitalize="off" autocorrect="off" spellcheck="false" />
       </label>
       <label>
-        <span>密码</span>
-        <input id="inputPass" name="password" type="password" required placeholder="自己设一个" />
+        <span>密码 <em class="opt">可留空</em></span>
+        <input id="inputPass" name="password" type="password" placeholder="留空即免密码登录" />
       </label>
       <button id="btnLogin" type="submit">进入聊天室</button>
       <p class="login-err" id="loginErr" role="alert"></p>
@@ -92,17 +92,19 @@
 
     <div class="composer" id="composer">
       <div class="attach" id="attach" hidden>
-        <img id="attachImg" alt="待发送的图片" />
-        <video id="attachVideo" class="attach-video" muted playsinline controls alt="待发送的视频" hidden></video>
+        <span class="file-chip-ico" id="attachIco">📄</span>
+        <span class="file-chip-body">
+          <b id="attachName">文件</b>
+          <em id="attachSize"></em>
+        </span>
         <button id="btnAttachClear" class="attach-x" title="移除">×</button>
       </div>
       <div class="composer-row">
-        <button id="btnImage" class="icon-btn" title="发送图片 / GIF">🖼</button>
-        <button id="btnVideo" class="icon-btn" title="发送视频">🎬</button>
-        <textarea id="input" rows="1" maxlength="4000" placeholder="说点什么…"></textarea>
+        <button id="btnFile" class="icon-btn" title="发送文件（任意类型，不限大小）">📎</button>
+        <textarea id="input" rows="1" maxlength="4000" placeholder="说点什么… 右键头像可 @ 某人"></textarea>
         <button id="btnSend" class="send-btn">发送</button>
       </div>
-      <p class="composer-tip">Enter 发送 · Shift+Enter 换行 · 图片自动压缩到 1280px · GIF/视频原样发送（GIF≤1.1MB、视频≤1.9MB）</p>
+      <p class="composer-tip">Enter 发送 · Shift+Enter 换行 · 📎 任意文件走 HTTP 上传，不限类型与大小 · 右键 / 长按头像可 @ 成员</p>
     </div>
   </main>
 
@@ -116,8 +118,7 @@
 </div>
 
 <div id="toast" class="toast" hidden></div>
-<input id="fileImage" type="file" accept="image/*" hidden />
-<input id="fileVideo" type="file" accept="video/*" hidden />
+<input id="fileAny" type="file" hidden />
 <input id="fileAvatar" type="file" accept="image/*" hidden />
 
 <script src="/app.js"></script>

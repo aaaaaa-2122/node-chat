@@ -86,7 +86,9 @@ check('suffix 末 512KB -> 206 且匹配', suffix.status === 206 && suffix.body.
 console.log('\n== 5. 安全边界 ==');
 check('坏 range -> 416', (await getUrl(finalUrl, 'bytes=99999999999-')).status === 416);
 check('目录穿越 -> 404', (await getUrl('/files/..%2f..%2fsecret.txt')).status === 404);
-check('不支持类型 -> 400', (await uploadChunk('evil.exe', 0, 1, Buffer.from('MZ'))).status === 400);
+// 格式不限：.exe 这类只允许下载的放行；会当页面/脚本执行的（.html/.svg/.js）才拒绝
+check('exe 允许上传（只给下载）', (await uploadChunk('setup.exe', 0, 1, Buffer.from('MZ'))).status === 200);
+check('html 被拒绝 -> 400', (await uploadChunk('evil.html', 0, 1, Buffer.from('<b>'))).status === 400);
 
 console.log('\n结果: ' + pass + ' 通过, ' + fail + ' 失败');
 process.exit(fail ? 1 : 0);

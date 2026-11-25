@@ -203,8 +203,8 @@ const talk = await evalJs(`
   })()
 `);
 console.log('发送结果：' + talk);
-// 图片消息：造一张 2400x1400 的图丢进 file input，验证前端压缩 + 发送
-const imgResult = await evalJs(`
+// 文件消息：造一张 2400x1400 的图当一个普通文件，验证 HTTP 上传 + 文件卡片（不压缩、原样上传）
+const fileResult = await evalJs(`
   (async () => {
     async function makeFile(w, h) {
       const c = document.createElement('canvas');
@@ -216,28 +216,41 @@ const imgResult = await evalJs(`
       ctx.fillStyle = 'rgba(255,255,255,.92)';
       ctx.font = 'bold ' + Math.round(h / 4) + 'px sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText('图片消息', w / 2, h / 2);
+      ctx.fillText('文件消息', w / 2, h / 2);
       const blob = await new Promise(r => c.toBlob(r, 'image/png', 0.95));
-      return new File([blob], 'shot.png', { type: 'image/png' });
+      return new File([blob], '大图示例.png', { type: 'image/png' });
     }
     const dt = new DataTransfer();
     dt.items.add(await makeFile(2400, 1400));
-    const input = document.querySelector('#fileImage');
+    const input = document.querySelector('#fileAny');
     input.files = dt.files;
     input.dispatchEvent(new Event('change'));
     const t0 = Date.now();
-    while (document.querySelector('#attach').hidden && Date.now() - t0 < 8000) {
+    while (document.querySelector('#attach').hidden && Date.now() - t0 < 20000) {
       await new Promise(r => setTimeout(r, 100));
     }
-    if (document.querySelector('#attach').hidden) return '预览没出来';
-    const src = document.querySelector('#attachImg').src;
-    document.querySelector('#input').value = '压过的图，原始 2400×1400';
+    if (document.querySelector('#attach').hidden) return '附件没就绪';
+    const name = document.querySelector('#attachName').textContent;
+    document.querySelector('#input').value = '@webB 原图在这（走 HTTP 上传）';
     document.querySelector('#btnSend').click();
-    await new Promise(r => setTimeout(r, 1200));
-    return 'dataUrl ' + Math.round(src.length / 1024) + ' KB';
+    await new Promise(r => setTimeout(r, 2000));
+    return '附件=' + name + '，文件卡片=' + document.querySelectorAll('.file-card').length;
   })()
 `);
-console.log('图片消息：' + imgResult);
+console.log('文件消息：' + fileResult);
+
+// @ 提及：右键消息头像应把 @某人 插进输入框
+const mentionResult = await evalJs(`
+  (async () => {
+    const av = [...document.querySelectorAll('.msg:not(.mine) .msg-avatar')].pop();
+    if (!av) return '没有对方头像';
+    av.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    const v = document.querySelector('#input').value;
+    document.querySelector('#input').value = '';
+    return v;
+  })()
+`);
+console.log('右键头像 @：' + JSON.stringify(mentionResult));
 
 // 换头像
 const avResult = await evalJs(`

@@ -64,14 +64,15 @@ authA.user === 'webA' ? ok('A 认证成功（自动注册）') : bad('A 认证',
 const authB = await b.req('auth', { username: 'webB', password: 'pw2' });
 authB.user === 'webB' ? ok('B 认证成功') : bad('B 认证');
 
+await a.req('join', { room: '大厅' });
+await b.req('join', { room: '大厅' });
+ok('两个客户端加入「大厅」');
+
+// 房间列表在加入之后才非空（服务端不预置默认群），所以断言放在 join 后面
 const rooms = await a.req('rooms', {});
 Array.isArray(rooms.rooms) && rooms.rooms.length > 0
   ? ok('rooms 返回 ' + rooms.rooms.map((r) => r.name).join('/'))
   : bad('rooms 异常', JSON.stringify(rooms));
-
-await a.req('join', { room: '大厅' });
-await b.req('join', { room: '大厅' });
-ok('两个客户端加入「大厅」');
 
 const grp = await a.req('group', { room: '大厅', text: '网页端联调 · 中文与 emoji 🎉' });
 grp.message && grp.message.text.includes('🎉') ? ok('群消息发送成功') : bad('群消息', JSON.stringify(grp));

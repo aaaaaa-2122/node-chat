@@ -82,19 +82,32 @@ class Store {
     return this.users.has(username);
   }
 
-  /** 注册新用户，密码使用 scrypt 加盐哈希保存 */
-  createUser(username, password) {
+  /**
+   * 注册新用户，密码使用 scrypt 加盐哈希保存。
+   * passwordless=true 时生成一个随机密码（谁也猜不到），并打标记；
+   * 这类账号只能用空密码登录，避免被任意口令撞开。
+   */
+  createUser(username, password, passwordless = false) {
     const salt = crypto.randomBytes(16).toString('hex');
-    const hash = crypto.scryptSync(String(password), salt, 32).toString('hex');
+    const secret = passwordless ? crypto.randomBytes(24).toString('hex') : String(password);
+    const hash = crypto.scryptSync(secret, salt, 32).toString('hex');
     const user = { username, salt, hash, createdAt: nowMs(), avatar: null };
+    if (passwordless) user.passwordless = true;
     this.users.set(username, user);
     this._touch(this.usersFile);
     return user;
   }
 
+  isPasswordless(username) {
+    const user = this.users.get(username);
+    return !!(user && user.passwordless);
+  }
+
   verifyUser(username, password) {
     const user = this.users.get(username);
     if (!user) return false;
+    // 无密码账号不接受任何非空口令
+    if (user.passwordless) return false;
     const candidate = crypto.scryptSync(String(password), user.salt, 32);
     const expected = Buffer.from(user.hash, 'hex');
     if (candidate.length !== expected.length) return false;
