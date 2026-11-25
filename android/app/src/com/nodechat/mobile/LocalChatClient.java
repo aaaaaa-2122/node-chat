@@ -27,6 +27,7 @@ public class LocalChatClient {
     private Socket socket;
     private OutputStream out;
     private volatile boolean closed = false;
+    private Secure.Channel channel; // 强制加密
     private FrameListener frameListener;
     private StateListener stateListener;
     private Thread readerThread;
@@ -41,6 +42,10 @@ public class LocalChatClient {
         socket.connect(new InetSocketAddress(host, port), 5000);
         socket.setTcpNoDelay(true);
         out = socket.getOutputStream();
+
+        // 强制加密：读线程启动前同步做 secure 握手
+        try { secureHandshake(); }
+        catch (Exception e) { closed = true; throw new IOException("加密握手失败: " + e.getMessage()); }
 
         readerThread = new Thread(new Runnable() {
             @Override
@@ -60,6 +65,29 @@ public class LocalChatClient {
         if (stateListener != null) stateListener.onStateChanged(true, null);
     }
 
+    /** 强制加密：连接后同步握手（读线程尚未启动） */
+    private void secureHandshake() throws Exception {
+        Secure.Key key = Secure.generateX25519();
+        java.util.Map<String, Object> d = Json.obj();
+        d.put("v", 1);
+        d.put("cpub", android.util.Base64.encodeToString(key.pub, android.util.Base64.NO_WRAP));
+        synchronized (writeLock) { out.write((Protocol.frame(Protocol.C2S_SECURE, d, null) + "\n").getBytes("UTF-8")); out.flush(); }
+        java.io.BufferedReader r = new java.io.BufferedReader(new java.io.InputStreamReader(socket.getInputStream(), "UTF-8"));
+        String line = r.readLine();
+        if (line == null) throw new IOException("服务端在握手阶段关闭连接");
+        java.util.Map<String, Object> f = Json.asObject(Json.parse(line));
+        String type = Json.getStr(f, "type");
+        java.util.Map<String, Object> data = Json.asObject(f.get("data"));
+        if (Protocol.S2C_SECURE_ERR.equals(type)) throw new IOException("加密握手被拒: " + Json.getStr(data, "message"));
+        if (!Protocol.S2C_SECURE_OK.equals(type)) throw new IOException("握手应答异常: " + type);
+        byte[] spub = android.util.Base64.decode(Json.getStr(data, "spub"), android.util.Base64.NO_WRAP);
+        byte[] shared = Secure.x25519(key.priv, spub);
+        byte[] salt = Secure.sha256(concatBytes(key.pub, spub));
+        byte[] c2s = Secure.hkdfSha256(shared, salt, "nodechat-c2s".getBytes("UTF-8"));
+        byte[] s2c = Secure.hkdfSha256(shared, salt, "nodechat-s2c".getBytes("UTF-8"));
+        channel = new Secure.Channel(c2s, s2c, 0);
+    }
+
     private void readLoop() {
         try {
             // InputStreamReader 跨分块保留 UTF-8 状态，中文不会被截断
@@ -69,7 +97,7 @@ public class LocalChatClient {
             while (!closed && (line = reader.readLine()) != null) {
                 line = line.trim();
                 if (line.isEmpty()) continue;
-                if (frameListener != null) frameListener.onFrame(line);
+                if (frameListener != null) frameListener.onFrame(channel == null ? line : channel.open(line));
             }
         } catch (IOException ignored) {
             // 连接断开
@@ -81,12 +109,13 @@ public class LocalChatClient {
         }
     }
 
+    private static byte[] concatBytes(byte[] a, byte[] b) { byte[] o = new byte[a.length+b.length]; System.arraycopy(a,0,o,0,a.length); System.arraycopy(b,0,o,a.length,b.length); return o; }
     /** 发送一帧（内容为原始 JSON 文本） */
     public void send(String rawJson) {
         if (out == null || closed) return;
         try {
             synchronized (writeLock) {
-                out.write((rawJson + "\n").getBytes("UTF-8"));
+                out.write(((channel == null ? rawJson : channel.seal(rawJson)) + "\n").getBytes("UTF-8"));
                 out.flush();
             }
         } catch (IOException e) {

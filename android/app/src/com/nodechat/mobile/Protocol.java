@@ -16,6 +16,7 @@ public final class Protocol {
     public static final String VERSION = "1.0";
 
     // 客户端 -> 服务端
+    public static final String C2S_SECURE = "secure";
     public static final String C2S_AUTH = "auth";
     public static final String C2S_MSG = "msg";
     public static final String C2S_GROUP = "group";
@@ -30,6 +31,8 @@ public final class Protocol {
     public static final String C2S_QUIT = "quit";
 
     // 服务端 -> 客户端
+    public static final String S2C_SECURE_OK = "secure_ok";
+    public static final String S2C_SECURE_ERR = "secure_err";
     public static final String S2C_AUTH_OK = "auth_ok";
     public static final String S2C_AUTH_ERR = "auth_err";
     public static final String S2C_MSG = "msg";
