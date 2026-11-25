@@ -68,7 +68,7 @@ D8_JAR="$BUILD_TOOLS/lib/d8.jar"
 APKSIGNER_JAR="$BUILD_TOOLS/lib/apksigner.jar"
 
 VERSION_CODE=4
-VERSION_NAME=1.0.3
+VERSION_NAME=1.1.0
 
 echo "=============================================="
 echo " Node Chat 安卓端构建"
