@@ -36,14 +36,15 @@ class Session {
     return this.user !== null;
   }
 
-  /** 简单令牌桶：10 秒内最多 60 条业务消息 */
-  allowRequest() {
+  /** 简单令牌桶：默认不限流（局域网版），limit>0 时「10 秒内最多 limit 条业务消息」 */
+  allowRequest(limit) {
+    if (!(limit > 0)) return true;
     const now = Date.now();
     if (now - this.rate.windowStart > 10000) {
       this.rate = { count: 0, windowStart: now };
     }
     this.rate.count += 1;
-    return this.rate.count <= 60;
+    return this.rate.count <= limit;
   }
 }
 
@@ -63,6 +64,8 @@ class ChatServer {
     this.requireSecure = options.requireSecure === undefined ? false : !!options.requireSecure;
     /** 是否强制密码登录（默认 false：局域网场景留空密码即可登录） */
     this.requirePassword = options.requirePassword === undefined ? false : !!options.requirePassword;
+    /** 单连接限流：10 秒内最多 N 条（默认 0 = 不限，局域网不需要公网那套） */
+    this.rateLimit = options.rateLimit === undefined ? 0 : Math.max(0, Number(options.rateLimit) || 0);
     this.store = new Store(this.dataDir);
     /** 服务端长期身份（Ed25519），启动时加载或生成 */
     this.identity = null;
@@ -246,7 +249,7 @@ class ChatServer {
       );
       return;
     }
-    if (!session.allowRequest()) {
+    if (!session.allowRequest(this.rateLimit)) {
       this._send(session, P.frame(S2C.ERROR, { code: ERR.RATE_LIMIT, message: '发送过于频繁，请稍后再试' }));
       return;
     }
@@ -671,6 +674,7 @@ if (require.main === module) {
     demo: args.demo,
     requireSecure: args.requireSecure,
     requirePassword: args.requirePassword,
+    rateLimit: args.rateLimit,
   });
 
   server
@@ -720,7 +724,7 @@ function localAddresses() {
 
 /** 简单的命令行参数解析 */
 function parseArgs(argv) {
-  const out = { host: '0.0.0.0', port: 9099, data: path.join(__dirname, '..', 'data'), demo: false, noStdin: false };
+  const out = { host: '0.0.0.0', port: 9099, data: path.join(__dirname, '..', 'data'), demo: false, noStdin: false, rateLimit: 0 };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--host') out.host = argv[++i];
@@ -731,6 +735,7 @@ function parseArgs(argv) {
     else if (a === '--no-stdin') out.noStdin = true;
     else if (a === '--require-secure') out.requireSecure = true;
     else if (a === '--require-password') out.requirePassword = true;
+    else if (a === '--rate-limit') out.rateLimit = Number(argv[++i]);
     else if (a === '--help' || a === '-h') {
       console.log(`用法: node src/server.js [选项]
 
@@ -743,6 +748,7 @@ function parseArgs(argv) {
   --no-stdin        不监听标准输入广播
   --require-secure  只接受加密连接（默认 false：明文客户端照常可用）
   --require-password  强制密码登录（默认 false：局域网场景可留空密码）
+  --rate-limit N    单连接限流：10 秒内最多 N 条（默认 0 = 不限）
   -h, --help        显示帮助`);
       process.exit(0);
     }

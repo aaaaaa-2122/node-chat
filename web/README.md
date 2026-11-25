@@ -63,7 +63,7 @@ sudo bash install-web.sh 80 9099
 | `--host` | 0.0.0.0 | 监听地址 |
 | `--upstream` | 127.0.0.1:9099 | 上游聊天服务端 |
 | `--root` | `../public` | 静态文件目录 |
-| `--max-frame` | 2 MiB | 单帧上限（图片是 data URL，别调太小） |
+| `--max-frame` | 16 MiB | 单帧上限（拉历史时老消息可能带内联媒体，太小会断连接） |
 | `--tls-cert` / `--tls-key` | 无 | 给了证书就切 HTTPS，WebSocket 自动变 wss，前端不用改 |
 | `--redirect-port` | 不启用 | 有证书时再开一个明文端口，只做 301 跳转和 ACME 验证 |
 | `--acme-root` | `/var/www/acme` | ACME 验证文件目录，`/.well-known/acme-challenge/` 从这里读 |
@@ -150,6 +150,22 @@ curl -sk --resolve nodechat.example.com:443:<服务器IP> https://nodechat.examp
   得先改服务端的 `_handleAuth` 加白名单。
 - 国内云主机用域名对外提供 80/443 服务需要备案，没备案可能被拦——这和代码无关，
   是机房侧的策略。
+
+## 通用文件上传
+
+网页端不再单独发图片/视频，统一成「📎 发送文件」：
+
+| 接口 | 说明 |
+| --- | --- |
+| `POST /upload?name=&mime=&uploadId=&chunk=&total=` | 4 MB 一块，最后一块返回 `{ok,url,size}` |
+| `GET /files/<stored>` | 支持 Range；媒体类型内联，其余 `Content-Disposition: attachment` |
+| 旁挂 `<stored>.meta` | 记住原始文件名与 MIME，下载名不丢（中文名可用 `filename*=UTF-8''`） |
+
+- 只挡 `.html/.svg/.js` 这类会被浏览器当页面执行的类型（同源 XSS），
+  `.exe/.apk/.zip` 等照常放行，只会被下载。
+- 单文件上限由环境变量 `FILE_MAX_BYTES` 控制（默认 2 GB），
+  清理周期 `FILE_KEEP_MS`（默认 7 天）。
+- 消息帧里只带 `file:{url,name,size,mime}` 和 `mentions:[...]`，所以聊天帧永远很小。
 
 ## 自检
 

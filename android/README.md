@@ -31,7 +31,8 @@ adb install -r dist/node-chat-android.apk
 ## 功能
 
 - 群聊 / 私聊列表，未读角标（会话行 + 底部标签合计），最后一条消息预览与时间。
-- 文字、图片消息（发送前 canvas 压缩：最长边 1280 / JPEG 0.75）；图片点击全屏查看。
+- 文字、文件消息（任意类型，走网关 HTTP 上传，不占聊天帧）；图片给缩略图，其余给文件卡片，点击下载。
+- @成员：长按头像把 `@某人` 插进输入框，被 @ 的消息气泡描边。
 - 历史记录、成员列表、在线用户、公告、新建群、加入 / 退出、头像设置（`⋯ → 我的资料 / 更换头像`）。
 - 断线自动重连：进程被系统冻结或切后台导致 socket 断开时，顶栏显示「已断开，N 秒后重连…」，
   回到前台立刻重试，重连后停留在原来的会话。
@@ -76,7 +77,7 @@ Java 收到行后回注 `window.__onFrame(frame)`。
 ```
 app/assets/index.html      登录 / 会话列表 / 聊天 三个页面 + 弹层
 app/assets/style.css       浅色卡片风格样式
-app/assets/app.js          协议客户端、状态、渲染、图片压缩、断线重连
+app/assets/app.js          协议客户端、状态、渲染、文件上传、@提及、断线重连
 app/src/.../MainActivity   WebView 宿主、JS 桥、文件选择器、生命周期
 app/src/.../LocalChatClient  TCP 客户端（写帧 / 按行读）
 app/src/.../ChatServerCore   内置服务端（房间、私聊、离线信箱、持久化）
@@ -106,17 +107,24 @@ test/                      核心自测、Node⇄Java 协议互操作、APK 静�
 | `ping` | 心跳 | `pong` / `ack` / `error` | 心跳 / 回执 / 错误 |
 | `quit` | 断开 | `system` / `presence` | 系统通知 / 上下线 |
 
-## 图片与头像
+## 文件、头像与 @成员
 
 | 环节 | 做法 |
 | --- | --- |
-| 选图 | `<input type="file">` + `WebChromeClient.onShowFileChooser` 唤起系统相册 |
-| 压缩 | JS canvas：聊天图最长边 1280 / JPEG 0.78，头像最长边 160 |
-| 传输 | data URL 内联在帧的 `image` 字段（单帧上限 1 MB，图片 600 000 字符） |
-| 头像 | `profile` 上传 → 服务端落盘并广播 `event:'avatar'` → 各端刷新 |
+| 选文件 | `<input type="file">`（`*/*`）+ `WebChromeClient.onShowFileChooser` 唤起系统选择器 |
+| 上传 | 分 4 MB 块 `POST` 到电脑上的网关 `http://<服务器IP>:8080/upload`，拿到 `/files/xxx` |
+| 消息 | 帧里只带 `file:{url,name,size,mime}`，不再内联图片；气泡里出文件卡片，图片给缩略图 |
+| 历史兼容 | 老消息里的 `image`（data URL）照旧渲染 |
+| 头像 | JS canvas 压到 160 / JPEG 0.8 → `profile` 上传 → 服务端广播 `event:'avatar'` |
+| @成员 | 长按（或右键）别人头像把 `@某人` 插进输入框；`@xxx` 高亮，被 @ 的消息气泡描边 |
+| mentions | 发送时自动解析正文里的 `@xxx`，作为 `mentions` 数组发给服务端 |
+
+> **文件上传依赖网关**：网页网关（`web/src/gateway.js`，默认 8080）要和聊天服务端跑在
+> 同一台机器上。没起网关时点发送会提示「文件上传需要电脑上开着网页网关」，
+> 纯文字/私聊/群聊不受影响。
 
 ## 已知限制
 
 - 内置服务端是 demo 级实现：密码明文存于 App 私有目录、只监听 `127.0.0.1`、不做 TLS。
-- 图片以 data URL 内联，无视频/文件传输。
+- 文件上传走同网段的 HTTP 网关，没网关就只能发文字。
 - App 被系统杀死时连接中断，重连依赖前台恢复。
