@@ -326,7 +326,7 @@
       setLoginMsg('用户名 1~24 位，支持字母/数字/中文/下划线', false);
       return;
     }
-    if (!pass) { setLoginMsg('请填写密码', false); $('password').focus(); return; }
+    // 密码可选：服务端开启 requirePassword 才必须填，局域网默认留空即可登录
     if (port && !/^\d{1,5}$/.test(port)) { setLoginMsg('端口格式不正确', false); return; }
 
     state.pendingLogin = { host: host, port: port, user: user, pass: pass };
@@ -435,6 +435,8 @@
       to: m.to || '',
       text: m.text || '',
       image: m.image || '',
+      file: m.file || null,
+      mentions: m.mentions || null,
       ts: ts,
       mine: (m.from || '') === state.me,
       system: false,
@@ -445,6 +447,7 @@
 
   function previewOf(m) {
     if (m.text) return m.text.replace(/\s+/g, ' ');
+    if (m.file) return '[文件] ' + (m.file.name || '');
     if (m.image) return '[图片]';
     return '';
   }
@@ -907,6 +910,106 @@
     return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
   }
 
+  // ------------------------------------------------------------ @ 提及
+  var MENTION_RE = /@([A-Za-z0-9_\u4e00-\u9fa5.-]{1,24})/g;
+
+  function parseMentions(text) {
+    var out = [];
+    if (!text) return out;
+    MENTION_RE.lastIndex = 0;
+    var m;
+    while ((m = MENTION_RE.exec(text))) {
+      var name = m[1].replace(/[.-]+$/, '');
+      if (name && name !== state.me && out.indexOf(name) < 0) out.push(name);
+      if (out.length >= 32) break;
+    }
+    return out;
+  }
+
+  function renderText(node, text, mentions) {
+    var names = (mentions && mentions.length) ? mentions : parseMentions(text);
+    if (!names.length) { node.textContent = text; return; }
+    var set = {};
+    names.forEach(function (n) { set[n] = true; });
+    MENTION_RE.lastIndex = 0;
+    var last = 0;
+    var m;
+    while ((m = MENTION_RE.exec(text))) {
+      var name = m[1].replace(/[.-]+$/, '');
+      if (!set[name]) continue;
+      if (m.index > last) node.appendChild(document.createTextNode(text.slice(last, m.index)));
+      var at = el('span', 'at', '@' + name);
+      node.appendChild(at);
+      var tail = m[0].slice(1 + name.length);
+      if (tail) node.appendChild(document.createTextNode(tail));
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) node.appendChild(document.createTextNode(text.slice(last)));
+  }
+
+  function insertMention(name) {
+    var box = $('inputText');
+    if (!box) return;
+    var token = '@' + name + ' ';
+    var start = box.selectionStart == null ? box.value.length : box.selectionStart;
+    var before = box.value.slice(0, start);
+    var needSpace = before && !/\s$/.test(before);
+    box.value = before + (needSpace ? ' ' : '') + token + box.value.slice(box.selectionEnd);
+    autoGrow();
+    box.focus();
+  }
+
+  /** 长按（手机上就是「右键」）→ 插入 @某人 */
+  function bindMention(node, name) {
+    if (!name) return;
+    var timer = null;
+    function clear() { if (timer) { clearTimeout(timer); timer = null; } }
+    node.addEventListener('touchstart', function () {
+      clear();
+      timer = setTimeout(function () {
+        timer = null;
+        insertMention(name);
+        if (window.navigator && navigator.vibrate) navigator.vibrate(12);
+      }, 480);
+    }, { passive: true });
+    node.addEventListener('touchend', clear);
+    node.addEventListener('touchmove', clear);
+    node.addEventListener('touchcancel', clear);
+    node.addEventListener('contextmenu', function (ev) {
+      ev.preventDefault();
+      insertMention(name);
+    });
+  }
+
+  /** 文件气泡：图片给缩略图，其余给「图标 + 名字 + 大小」卡片 */
+  function fileCard(f) {
+    var wrap = el('div', 'file-wrap');
+    var url = fileUrl(f.url);
+    var name = f.name || '文件';
+    if (isImageFile(name, f.mime)) {
+      var img = document.createElement('img');
+      img.className = 'photo';
+      img.src = url;
+      img.alt = name;
+      img.onclick = function () { openViewer(url); };
+      wrap.appendChild(img);
+    }
+    var a = document.createElement('a');
+    a.className = 'file-card';
+    a.href = url;
+    a.setAttribute('download', name);
+    a.target = '_blank';
+    var ico = el('span', 'file-ico', iconOf(name, f.mime));
+    a.appendChild(ico);
+    var body = el('span', 'file-body');
+    body.appendChild(el('b', '', name));
+    var meta = fmtSize(f.size);
+    body.appendChild(el('span', 'file-meta', (meta ? meta + ' · ' : '') + '点击下载'));
+    a.appendChild(body);
+    wrap.appendChild(a);
+    return wrap;
+  }
+
   function msgNode(m) {
     if (m.system) {
       var s = el('div', 'sys' + (m.notice ? ' notice' : ''), m.text);
@@ -914,10 +1017,14 @@
     }
     var wrap = el('div', 'msg' + (m.mine ? ' me' : ''));
     wrap.setAttribute('data-user', m.from || '');
+    if (!m.mine && m.mentions && m.mentions.length && m.mentions.indexOf(state.me) >= 0) {
+      wrap.classList.add('at-me');
+    }
 
     if (!m.mine) {
       var slot = el('div', 'row-avatar round avatar avatar-slot');
       slot.innerHTML = avatarHtml(m.from);
+      bindMention(slot, m.from);
       wrap.appendChild(slot);
     }
 
@@ -925,6 +1032,8 @@
     if (!m.mine) col.appendChild(el('div', 'who', m.from + ' · ' + hhmm(m.ts)));
 
     var bubble = el('div', 'bubble');
+    if (m.file) bubble.classList.add('has-file');
+    if (m.file) bubble.appendChild(fileCard(m.file));
     if (m.image) bubble.classList.add('photo-only');
     if (m.image) {
       var img = document.createElement('img');
@@ -936,8 +1045,8 @@
     }
     if (m.text) {
       var span = document.createElement('span');
-      span.className = m.image ? 'cap' : '';
-      span.textContent = m.text;
+      span.className = (m.image || m.file) ? 'cap' : '';
+      renderText(span, m.text, m.mentions);
       bubble.appendChild(span);
     }
     if (m.offline) bubble.appendChild(el('span', 'cap', '（离线补发）'));
@@ -1000,21 +1109,21 @@
   }
 
   // ------------------------------------------------------------ 发送
-  var pendingImage = null;
-  var pendingImageName = '';
+  var pendingFile = null; // { url, name, size, mime }
 
   function clearAttach() {
-    pendingImage = null;
-    pendingImageName = '';
+    pendingFile = null;
     $('attachBar').classList.add('hidden');
-    $('attachThumb').removeAttribute('src');
+    $('attachName').textContent = '';
+    $('attachIco').textContent = '📄';
+    $('attachSub').textContent = '点发送随消息一起发出';
   }
 
-  function setAttach(dataUrl, name) {
-    pendingImage = dataUrl;
-    pendingImageName = name || '图片';
-    $('attachThumb').src = dataUrl;
-    $('attachName').textContent = pendingImageName;
+  function setAttach(f) {
+    pendingFile = f;
+    $('attachIco').textContent = iconOf(f.name, f.mime);
+    $('attachName').textContent = f.name;
+    $('attachSub').textContent = fmtSize(f.size) + ' · 已上传';
     $('attachBar').classList.remove('hidden');
   }
 
@@ -1023,10 +1132,14 @@
     if (!c) { toast('请先选择一个会话'); return; }
     var input = $('inputText');
     var text = input.value.replace(/\s+$/, '');
-    if (!text && !pendingImage) return;
+    if (!text && !pendingFile) return;
 
     var payload = { text: text };
-    if (pendingImage) payload.image = pendingImage;
+    if (pendingFile) {
+      payload.file = { url: pendingFile.url, name: pendingFile.name, size: pendingFile.size, mime: pendingFile.mime };
+    }
+    var mentions = parseMentions(text);
+    if (mentions.length) payload.mentions = mentions;
     var type;
     if (c.isRoom) { payload.room = c.name; type = C2S.GROUP; }
     else { payload.to = c.name; type = C2S.MSG; }
@@ -1107,16 +1220,135 @@
     return attempt(0);
   }
 
-  $('btnPickImage').onclick = function () { $('imageFile').click(); };
-  $('imageFile').onchange = function (e) {
+  // ------------------------------------------------------------ 通用文件（走网关 HTTP 上传）
+  var FILE_PORT = 8080; // 网页网关默认端口（和服务端在同一台机器上起）
+  var FILE_CHUNK = 4 * 1024 * 1024;
+
+  function gatewayHost() {
+    var h = (state.pendingLogin && state.pendingLogin.host) || '127.0.0.1';
+    if (!h || h === 'localhost') h = '127.0.0.1';
+    return 'http://' + h + ':' + FILE_PORT;
+  }
+
+  /** 相对路径 /files/xxx 补成绝对地址（手机端不在网关同源下） */
+  function fileUrl(u) {
+    u = String(u || '');
+    return /^https?:\/\//.test(u) ? u : gatewayHost() + u;
+  }
+
+  var FILE_ICONS = {
+    png: '🖼', jpg: '🖼', jpeg: '🖼', gif: '🖼', webp: '🖼', bmp: '🖼', avif: '🖼',
+    mp4: '🎬', mov: '🎬', mkv: '🎬', webm: '🎬', avi: '🎬', m4v: '🎬',
+    mp3: '🎵', wav: '🎵', flac: '🎵', aac: '🎵', ogg: '🎵', m4a: '🎵',
+    pdf: '📕', doc: '📝', docx: '📝', txt: '📃', md: '📃', log: '📃',
+    xls: '📊', xlsx: '📊', csv: '📊', ppt: '📽', pptx: '📽',
+    zip: '🗜', rar: '🗜', '7z': '🗜', tar: '🗜', gz: '🗜',
+    exe: '⚙️', apk: '📦', iso: '💽', js: '💻', py: '💻', json: '🧾', html: '🧾'
+  };
+
+  function extOf(name) {
+    var m = /\.([A-Za-z0-9]{1,12})$/.exec(String(name || ''));
+    return m ? m[1].toLowerCase() : '';
+  }
+
+  function iconOf(name, mime) {
+    var e = extOf(name);
+    if (FILE_ICONS[e]) return FILE_ICONS[e];
+    var t = String(mime || '');
+    if (t.indexOf('image/') === 0) return '🖼';
+    if (t.indexOf('video/') === 0) return '🎬';
+    if (t.indexOf('audio/') === 0) return '🎵';
+    return '📄';
+  }
+
+  function fmtSize(n) {
+    if (typeof n !== 'number' || !isFinite(n) || n < 0) return '';
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
+    return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+  }
+
+  function isImageFile(name, mime) {
+    if (String(mime || '').indexOf('image/') === 0) return true;
+    return ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif'].indexOf(extOf(name)) >= 0;
+  }
+
+  /** 分块上传到网关，返回 Promise<{url,name,size,mime}> */
+  function uploadFile(file) {
+    var qname = encodeURIComponent(file.name || 'file');
+    var qmime = encodeURIComponent(file.type || '');
+    var uploadId = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10)).replace(/[^A-Za-z0-9]/g, '');
+    var total = Math.max(1, Math.ceil(file.size / FILE_CHUNK));
+    var base = gatewayHost() + '/upload?name=' + qname + '&mime=' + qmime + '&uploadId=' + uploadId;
+    var finalUrl = null;
+
+    function postChunk(i) {
+      var blob = file.slice(i * FILE_CHUNK, Math.min(file.size, (i + 1) * FILE_CHUNK));
+      var url = base + '&chunk=' + i + '&total=' + total;
+      return new Promise(function (resolve, reject) {
+        if (typeof fetch === 'function') {
+          fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/octet-stream' },
+            body: blob
+          }).then(function (res) {
+            return res.json().catch(function () { return null; }).then(function (j) {
+              if (!res.ok || !j || j.ok === false) {
+                reject(new Error((j && (j.message || j.error)) || ('上传失败（第 ' + (i + 1) + '/' + total + ' 块）')));
+                return;
+              }
+              if (j.url) finalUrl = j.url;
+              resolve();
+            });
+          }).catch(function (e) { reject(new Error('连不上文件服务：' + (e.message || e))); });
+          return;
+        }
+        // 老 WebView 没有 fetch，用 XHR
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', url, true);
+        xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+        xhr.onload = function () {
+          var j = null;
+          try { j = JSON.parse(xhr.responseText); } catch (e) { }
+          if (xhr.status < 200 || xhr.status >= 300 || !j || j.ok === false) {
+            reject(new Error((j && (j.message || j.error)) || ('上传失败（第 ' + (i + 1) + '/' + total + ' 块）')));
+            return;
+          }
+          if (j.url) finalUrl = j.url;
+          resolve();
+        };
+        xhr.onerror = function () { reject(new Error('连不上文件服务')); };
+        xhr.send(blob);
+      });
+    }
+
+    var chain = Promise.resolve();
+    for (var i = 0; i < total; i += 1) {
+      (function (idx) { chain = chain.then(function () { return postChunk(idx); }); })(i);
+    }
+    return chain.then(function () {
+      if (!finalUrl) throw new Error('上传未完成');
+      return { url: finalUrl, name: file.name, size: file.size, mime: file.type || '' };
+    });
+  }
+
+  $('btnPickFile').onclick = function () { $('filePick').click(); };
+  $('filePick').onchange = function (e) {
     var file = e.target.files && e.target.files[0];
     e.target.value = '';
     if (!file) return;
-    toast('图片处理中…');
-    compressImage(file, IMAGE_MAX_SIDE, IMAGE_QUALITY, MAX_DATA_URL).then(function (url) {
-      setAttach(url, file.name);
-      toast('图片已添加，点发送即可发出');
-    }).catch(function (err) { toast(err.message || '图片处理失败'); });
+    if (!file.size) { toast('空文件就不用发了'); return; }
+    toast('正在上传 ' + file.name + '（' + fmtSize(file.size) + '）…', 60000);
+    uploadFile(file).then(function (f) {
+      setAttach(f);
+      toast('已就绪，点发送即可');
+    }).catch(function (err) {
+      toast((err && err.message) || '上传失败');
+      setTimeout(function () {
+        toast('文件上传需要电脑上开着网页网关（默认 8080 端口）', 4500);
+      }, 1500);
+    });
   };
 
   $('attachRemove').onclick = function () { clearAttach(); };
@@ -1295,13 +1527,13 @@
   $('viewer').onclick = function () { $('viewer').classList.add('hidden'); };
 
   var toastTimer = null;
-  function toast(text) {
+  function toast(text, ms) {
     if (!text) return;
     var t = $('toast');
     t.textContent = text;
     t.classList.add('show');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { t.classList.remove('show'); }, 2400);
+    toastTimer = setTimeout(function () { t.classList.remove('show'); }, ms || 2400);
   }
 
   // ------------------------------------------------------------ 导航

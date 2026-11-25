@@ -45,10 +45,10 @@
       </label>
 
       <label class="field">
-        <span>密码</span>
+        <span>密码 <em class="opt">可留空</em></span>
         <!-- 用 -webkit-text-security 遮蔽，而不是 type=password：
              后者在部分 ROM（如 ColorOS）会拉起系统安全键盘，其窗口禁止截屏 -->
-        <input id="password" type="text" class="masked" placeholder="密码" maxlength="32"
+        <input id="password" type="text" class="masked" placeholder="留空即免密码登录" maxlength="32"
                autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false">
       </label>
 
@@ -106,17 +106,17 @@
   <div id="messages" class="messages"></div>
 
   <div id="attachBar" class="attach hidden">
-    <img id="attachThumb" alt="">
+    <div class="attach-ico" id="attachIco">📄</div>
     <div class="attach-meta">
-      <b id="attachName">图片</b>
-      <span>点发送随消息一起发出</span>
+      <b id="attachName">文件</b>
+      <span id="attachSub">点发送随消息一起发出</span>
     </div>
     <button id="attachRemove">移除</button>
   </div>
 
   <footer class="composer">
-    <button id="btnPickImage" class="icon pic">图片</button>
-    <textarea id="inputText" rows="1" placeholder="输入消息…" maxlength="4000"></textarea>
+    <button id="btnPickFile" class="icon pic">文件</button>
+    <textarea id="inputText" rows="1" placeholder="输入消息…（长按头像可 @ 人）" maxlength="4000"></textarea>
     <button id="btnSend" class="primary send">发送</button>
   </footer>
 </div>
@@ -140,7 +140,7 @@
 <div id="toast"></div>
 
 <input type="file" id="avatarFile" accept="image/*" class="hidden-file">
-<input type="file" id="imageFile" accept="image/*" class="hidden-file">
+<input type="file" id="filePick" class="hidden-file">
 
 <script src="app.js"></script>
 </body>
