@@ -5,8 +5,8 @@
 #   ./deploy/push.sh <公网IP> [ssh用户] [ssh端口] [私钥路径] [远端端口] [上游端口]
 #
 # 例：
-#   ./deploy/push.sh 111.230.141.216 ubuntu 22 ../node-chat-server-deploy/.deploy_key
-#   ./deploy/push.sh 111.230.141.216 ubuntu 22 ~/.ssh/tc.pem 8080 9099
+#   ./deploy/push.sh 203.0.113.10 <SSH_USER> 22 ../node-chat-server-deploy/id_ed25519
+#   ./deploy/push.sh 203.0.113.10 <SSH_USER> 22 ~/.ssh/id_rsa.pem 8080 9099
 #
 set -euo pipefail
 

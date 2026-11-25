@@ -37,7 +37,7 @@ cd ../web && node src/gateway.js --port 8080 --upstream 127.0.0.1:9099
 
 ```bash
 cd web
-./deploy/push.sh 111.230.141.216 ubuntu 22 ../node-chat-server-deploy/.deploy_key
+./deploy/push.sh 203.0.113.10 <SSH_USER> 22 ../node-chat-server-deploy/id_ed25519
 ```
 
 脚本会打包 `src/` + `public/` + `install-web.sh`，scp 上去，再 ssh 执行安装：
@@ -127,10 +127,10 @@ curl -sk --resolve nodechat.example.com:443:<服务器IP> https://nodechat.examp
 
 但有两个前提和一个代价：
 
-- **域名必须自有、且能改 NS 委派。** 第三方公共子域服务（例如 `xxx.是.gay` 这类
+- **域名必须自有、且能改 NS 委派。** 第三方公共子域服务（例如 `xxx.example.com` 这类
   由别人的 zone 免费分发子域的服务）不满足：zone 归服务方，你在自己账号里添加它只会
-  永远停在 Pending Nameserver Update，因为 `是.gay` 的 NS 不由你控制。另外 CF 免费版
-  只能添加二级域，`nodechat.是.gay` 这种三级域属于 Business 功能。
+  永远停在 Pending Nameserver Update，因为 `example.com` 的 NS 不由你控制。另外 CF 免费版
+  只能添加二级域，`nodechat.example.com` 这种三级域属于 Business 功能。
 - **落点改不了。** 国内出口到 Cloudflare anycast 固定走美西（实测 `lax09`/`lax11`），
   `--protocol http2` 仍是 `lax01`，`--region apac` 这个区域并不存在（只有 us/eu），
   新版也移除了手动指定边缘的 `--edge`。
