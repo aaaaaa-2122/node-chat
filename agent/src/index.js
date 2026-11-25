@@ -53,7 +53,7 @@ class ChatAgent extends EventEmitter {
     this.conn.on('close', () => this.emit('close'));
     await this.conn.connect();
     for (const r of (c.rooms || [])) {
-      if (r !== this.room) this.conn.send('join', { room: r });
+      this.conn.send('join', { room: r });
     }
     return this;
   }
@@ -62,6 +62,7 @@ class ChatAgent extends EventEmitter {
     const from = data.from;
     const text = textOf(data);
     const room = data.room || this.room;
+    console.log('[dbg] frame from=' + from + ' room=' + room + ' raw=' + JSON.stringify(data).slice(0, 300));
     if (!text) return;
     // 记录上下文（只记当前群、非自己发的）
     if (room === this.room && from !== this.me) {
@@ -103,7 +104,8 @@ class ChatAgent extends EventEmitter {
       try {
         await this.speak('（' + from + ' 在群里说）' + text, room);
       } catch (e) {
-        this.emit('error', e);
+        // 不让单次失败崩掉整个 agent（EventEmitter 无 error 监听会抛未捕获异常）
+        console.error('[agent] 发言失败:', e.message);
       }
     });
     return this;

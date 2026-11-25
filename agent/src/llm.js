@@ -32,8 +32,15 @@ async function complete(cfg, { persona, context, question }) {
   }
   const json = await res.json();
   const choice = json && json.choices && json.choices[0];
-  const content = choice && choice.message && choice.message.content;
-  if (!content) throw new Error('LLM 返回空内容');
+  const msg = choice && choice.message;
+  // 推理模型（如 Hy4-flash）：放在 reasoning 里的思考可能先于 content，
+  // max_tokens 不足时 content 为空、finish_reason=length。优先 content，为空则回退 reasoning。
+  let content = msg && (msg.content || msg.reasoning);
+  if ((!content || !String(content).trim()) && msg && msg.reasoning) content = msg.reasoning;
+  if (!content || !String(content).trim()) {
+    const reason = choice && choice.finish_reason;
+    throw new Error('LLM 返回空内容' + (reason ? ' (finish_reason=' + reason + '，可尝试增大 max_tokens)' : ''));
+  }
   return String(content).trim();
 }
 

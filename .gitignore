@@ -10,7 +10,8 @@ _stage/
 
 # 数据与本地配置
 data/
-agent/config.json  # agent 本地配置（含 API key/SMTP 密码）
+# agent 本地配置（含 API key/SMTP 密码）
+agent/config.json
 node_modules/
 .deploy_key*
 clean_*.json
