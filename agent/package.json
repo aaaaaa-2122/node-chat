@@ -1,12 +1,12 @@
 {
   "name": "node-chat-agent",
   "version": "0.1.0",
-   "private": true,
+  "private": true,
   "description": "轻量聊天 agent：监听群聊、按人格用 LLM 发言、用与验证码相同的 SMTP 发邮件（三个能力，零第三方依赖）",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "watch": "node src/watchdog.js"
+    "watch": "node src/index.js watch"
   },
   "engines": {
     "node": ">=18"
