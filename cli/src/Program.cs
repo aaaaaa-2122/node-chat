@@ -39,6 +39,8 @@ namespace NodeChat
         private static int Main(string[] args)
         {
             try { Console.OutputEncoding = new UTF8Encoding(false); } catch { }
+            // 加密原语自测（RFC 7748 X25519 向量）
+            if (args.Length > 0 && args[0] == "--self-test-crypto") return SelfTestCrypto();
             try
             {
                 return Run(args);
@@ -68,6 +70,54 @@ namespace NodeChat
                 Fail("internal", ex.GetType().Name + ": " + ex.Message);
                 return 1;
             }
+        }
+
+
+        private static byte[] Hex(String hex)
+        {
+            byte[] o = new byte[hex.Length / 2];
+            for (int i = 0; i < o.Length; i++) o[i] = Convert.ToByte(hex.Substring(i * 2, 2), 16);
+            return o;
+        }
+        private static int SelfTestCrypto()
+        {
+            // RFC 7748 X25519 Alice/Bob 向量
+            byte[] aPriv = Hex("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a");
+            byte[] aPub = Hex("8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a");
+            byte[] bPriv = Hex("5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb");
+            byte[] bPub = Hex("de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f");
+            byte[] expect = Hex("4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742");
+            byte[] gotA = CryptoPrimitives.X25519(aPriv, bPub);
+            byte[] gotB = CryptoPrimitives.X25519(bPriv, aPub);
+            Console.WriteLine("x25519 A: " + BitConverter.ToString(gotA).Replace("-", "").ToLower());
+            Console.WriteLine("x25519 B: " + BitConverter.ToString(gotB).Replace("-", "").ToLower());
+            Console.WriteLine("expected : " + BitConverter.ToString(expect).Replace("-", "").ToLower());
+            byte[] gx = Hex("cea7403d4d606b6e074ec5d3baf39d18");
+                        // RFC 5869 HKDF-SHA256 TC1
+            byte[] hikm = new byte[22]; for (int i = 0; i < 22; i++) hikm[i] = 0x0b;
+            byte[] hsalt = new byte[13]; for (int i = 0; i < 13; i++) hsalt[i] = (byte)i;
+            byte[] hinfo = new byte[10]; for (int i = 0; i < 10; i++) hinfo[i] = (byte)(0xf0 + i);
+            Console.WriteLine("hkdf: " + BitConverter.ToString(CryptoPrimitives.HkdfSha256(hikm, hsalt, hinfo)).Replace("-", "").ToLower() + " (expect 3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf)");
+            // FIPS AES-256 单块：key=0 block=0 -> 8ea2b7ca516745bfeafc49904b496089
+            using (var aes = System.Security.Cryptography.Aes.Create())
+            {
+                aes.Key = new byte[32]; aes.IV = new byte[16];
+                aes.Mode = System.Security.Cryptography.CipherMode.ECB;
+                aes.Padding = System.Security.Cryptography.PaddingMode.None;
+                using (var tr = aes.CreateEncryptor())
+                {
+                    byte[] r = tr.TransformFinalBlock(new byte[16], 0, 16);
+                    Console.WriteLine("aes256(0,0): " + BitConverter.ToString(r).Replace("-", "").ToLower() + " (expect 8ea2b7ca516745bfeafc49904b496089)");
+                }
+            }
+            // NIST GCM Test Case 1 (AES-256)
+            byte[] gk = new byte[32], giv = new byte[12], gp = new byte[16], gaad = new byte[0];
+            byte[] gblob = CryptoPrimitives.AesGcmEncrypt(gk, giv, gaad, gp);
+            string gct = BitConverter.ToString(gblob, 12, 16).Replace("-", "").ToLower();
+            string gtag = BitConverter.ToString(gblob, 28, 16).Replace("-", "").ToLower();
+            Console.WriteLine("gcm ct : " + gct + "  (expect cea7403d4d606b6e074ec5d3baf39d18)");
+            Console.WriteLine("gcm tag: " + gtag + "  (expect d0d1c8a799996bf0265b98b5d48ab919)");
+            return 0;
         }
 
         private static int Run(string[] argv)

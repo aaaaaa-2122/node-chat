@@ -4,6 +4,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
+using Encoding = System.Text.Encoding;
 
 namespace NodeChat
 {
@@ -12,6 +13,7 @@ namespace NodeChat
     {
         private LineSocket _sock;
         private int _seq;
+        private SecureChannel _channel; // 强制加密：握手后所有帧加解密
 
         public string Me { get; private set; }
         public Dictionary<string, object> AuthData { get; private set; }
@@ -19,17 +21,67 @@ namespace NodeChat
         public void Connect(string host, int port, int connectTimeoutMs)
         {
             _sock = new LineSocket(host, port, connectTimeoutMs);
+            SecureHandshake(connectTimeoutMs);
+        }
+
+        /// <summary>强制加密：连接后立即做 secure 握手（对齐 server/src/secure.js）</summary>
+        private void SecureHandshake(int timeoutMs)
+        {
+            byte[] priv, pub;
+            CryptoPrimitives.GenerateX25519(out priv, out pub);
+            // 发 secure 帧（明文，握手前）
+            var frame = Protocol.Frame(Protocol.SECURE, Protocol.Data("v", 1, "cpub", Convert.ToBase64String(pub)), null);
+            _sock.WriteLine(frame);
+            // 收 secure_ok / secure_err
+            string line = _sock.ReadLine(timeoutMs);
+            if (line == null) throw new ChatClosedException("服务端在加密握手阶段关闭了连接");
+            Dictionary<string, object> f = AsFrame(line);
+            string type = Json.S(f, "type");
+            Dictionary<string, object> data = Json.Obj(Get(f, "data"));
+            if (type == Protocol.SECURE_ERR)
+                throw new ChatException("secure_failed", Json.S(data, "message") ?? "加密握手被拒");
+            if (type != Protocol.SECURE_OK)
+                throw new ChatException("secure_failed", "加密握手应答异常: " + type);
+
+            byte[] spub = Convert.FromBase64String(Json.S(data, "spub") ?? "");
+            string fp = Json.S(data, "fp");
+            // 计算共享密钥并派生会话密钥（客户端 dir=0，发 c2s 收 s2c）
+            byte[] shared = CryptoPrimitives.X25519(priv, spub);
+            byte[] salt = CryptoPrimitives.Sha256(Concat(pub, spub));
+            byte[] c2s = CryptoPrimitives.HkdfSha256(shared, salt, Encoding.ASCII.GetBytes("nodechat-c2s"));
+            byte[] s2c = CryptoPrimitives.HkdfSha256(shared, salt, Encoding.ASCII.GetBytes("nodechat-s2c"));
+            _channel = new SecureChannel(c2s, s2c, 0);
+        }
+
+        private static byte[] Concat(byte[] a, byte[] b)
+        {
+            byte[] o = new byte[a.Length + b.Length];
+            Array.Copy(a, o, a.Length); Array.Copy(b, 0, o, a.Length, b.Length);
+            return o;
+        }
+
+        /// <summary>统一发帧：握手后自动 seal</summary>
+        private void WriteFrame(string json)
+        {
+            _sock.WriteLine(_channel == null ? json : _channel.Seal(json));
+        }
+        /// <summary>统一收帧：握手后自动 open，返回明文 JSON</summary>
+        private string ReadFrameLine(int timeoutMs)
+        {
+            string line = _sock.ReadLine(timeoutMs);
+            if (line == null || _channel == null) return line;
+            return _channel.Open(line);
         }
 
         /// <summary>认证；失败抛 ChatException</summary>
         public Dictionary<string, object> Auth(string user, string password, int timeoutMs)
         {
-            _sock.WriteLine(Protocol.Frame(Protocol.AUTH,
+            WriteFrame(Protocol.Frame(Protocol.AUTH,
                 Protocol.Data("username", user, "password", password), "auth"));
 
             while (true)
             {
-                string line = _sock.ReadLine(timeoutMs);
+                string line = ReadFrameLine(timeoutMs);
                 if (line == null) throw new ChatClosedException("服务端关闭了连接（认证阶段）");
                 Dictionary<string, object> f = AsFrame(line);
                 if (f == null) continue;
@@ -51,11 +103,11 @@ namespace NodeChat
         /// <summary>注册（发邮箱验证码）；成功抛异常则失败</summary>
         public Dictionary<string, object> Register(string user, string password, string email, int timeoutMs)
         {
-            _sock.WriteLine(Protocol.Frame(Protocol.REGISTER,
+            WriteFrame(Protocol.Frame(Protocol.REGISTER,
                 Protocol.Data("username", user, "password", password, "email", email), "reg"));
             while (true)
             {
-                string line = _sock.ReadLine(timeoutMs);
+                string line = ReadFrameLine(timeoutMs);
                 if (line == null) throw new ChatClosedException("服务端关闭了连接（注册阶段）");
                 Dictionary<string, object> f = AsFrame(line);
                 if (f == null) continue;
@@ -70,11 +122,11 @@ namespace NodeChat
         /// <summary>提交邮箱验证码；成功则已登录（返回 auth 数据）</summary>
         public Dictionary<string, object> VerifyEmail(string user, string code, int timeoutMs)
         {
-            _sock.WriteLine(Protocol.Frame(Protocol.VERIFY_EMAIL,
+            WriteFrame(Protocol.Frame(Protocol.VERIFY_EMAIL,
                 Protocol.Data("username", user, "code", code), "verify"));
             while (true)
             {
-                string line = _sock.ReadLine(timeoutMs);
+                string line = ReadFrameLine(timeoutMs);
                 if (line == null) throw new ChatClosedException("服务端关闭了连接（验证阶段）");
                 Dictionary<string, object> f = AsFrame(line);
                 if (f == null) continue;
@@ -95,11 +147,11 @@ namespace NodeChat
         /// <summary>重发验证码</summary>
         public Dictionary<string, object> ResendCode(string user, int timeoutMs)
         {
-            _sock.WriteLine(Protocol.Frame(Protocol.RESEND_CODE,
+            WriteFrame(Protocol.Frame(Protocol.RESEND_CODE,
                 Protocol.Data("username", user), "resend"));
             while (true)
             {
-                string line = _sock.ReadLine(timeoutMs);
+                string line = ReadFrameLine(timeoutMs);
                 if (line == null) throw new ChatClosedException("服务端关闭了连接（重发阶段）");
                 Dictionary<string, object> f = AsFrame(line);
                 if (f == null) continue;
@@ -119,11 +171,11 @@ namespace NodeChat
                                                   string expectType = null)
         {
             string id = "c" + (++_seq) + "_" + DateTime.Now.Ticks.ToString("x");
-            _sock.WriteLine(Protocol.Frame(type, data, id));
+            WriteFrame(Protocol.Frame(type, data, id));
 
             while (true)
             {
-                string line = _sock.ReadLine(timeoutMs);
+                string line = ReadFrameLine(timeoutMs);
                 if (line == null) throw new ChatClosedException("服务端关闭了连接");
                 Dictionary<string, object> f = AsFrame(line);
                 if (f == null) continue;
@@ -144,13 +196,13 @@ namespace NodeChat
         /// <summary>只发不收（join/leave/ping 之类不关心结果时用）</summary>
         public void Send(string type, Dictionary<string, object> data)
         {
-            _sock.WriteLine(Protocol.Frame(type, data, null));
+            WriteFrame(Protocol.Frame(type, data, null));
         }
 
         /// <summary>读一帧；超时返回 null，连接关闭抛异常</summary>
         public Dictionary<string, object> ReadFrame(int timeoutMs)
         {
-            string line = _sock.ReadLine(timeoutMs);
+            string line = ReadFrameLine(timeoutMs);
             if (line == null) throw new ChatClosedException("服务端关闭了连接");
             return AsFrame(line);
         }
