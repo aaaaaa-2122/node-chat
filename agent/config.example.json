@@ -1,0 +1,31 @@
+{
+  "chat": {
+    "host": "127.0.0.1",
+    "port": 9099,
+    "user": "chatagent",
+    "pass": "change-me",
+    "secure": true,
+    "rooms": ["大厅"],
+    "mentionOnly": true
+  },
+  "llm": {
+    "endpoint": "https://api.openai.com/v1/chat/completions",
+    "apiKey": "YOUR_API_KEY",
+    "model": "gpt-4o-mini",
+    "persona": "你是群里友善、简明、爱帮忙的助手，回复控制在 3 句以内，语气自然。",
+    "maxTokens": 300,
+    "temperature": 0.7
+  },
+  "smtp": {
+    "host": "smtp.example.com",
+    "port": 465,
+    "secure": "tls",
+    "user": "YOUR_SMTP_USER",
+    "pass": "YOUR_SMTP_PASS",
+    "from": "agent@example.com"
+  },
+  "wake": {
+    "replyPrefix": "",
+    "contextLimit": 20
+  }
+}
